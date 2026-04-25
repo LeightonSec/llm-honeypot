@@ -1,0 +1,254 @@
+import sys
+import os
+import re
+import random
+from dotenv import load_dotenv
+
+load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
+
+AI_FIREWALL_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'ai-firewall'))
+sys.path.insert(0, AI_FIREWALL_PATH)
+
+try:
+    from detector import analyse_prompt as _firewall_analyse
+    FIREWALL_AVAILABLE = True
+except ImportError:
+    FIREWALL_AVAILABLE = False
+
+
+HONEYPOT_PATTERNS = {
+    "prompt_injection": [
+        r"ignore (?:all )?previous (?:instructions?|prompts?|context)",
+        r"new (?:system )?instructions?[\s:]",
+        r"###\s*(?:instruction|system|prompt)",
+        r"</?(?:system|instruction|prompt)>",
+        r"\[\[.*?\]\]",
+        r"you are now (?:a |an )?(?:new|different)",
+        r"override (?:previous |your )?(?:instructions?|programming|directives?)",
+        r"forget (?:everything|all) (?:above|before|previous)",
+        r"disregard (?:all )?(?:previous|prior|above)",
+        r"your (?:new|updated) (?:task|instructions?|role|purpose) (?:is|are)",
+    ],
+    "jailbreak": [
+        r"\bdan\b",
+        r"do anything now",
+        r"jailbreak",
+        r"no (?:restrictions?|rules?|limits?|guidelines?|filters?|ethics?)",
+        r"pretend (?:you (?:have no|don't have|are without)|there are no)",
+        r"act as (?:if )?(?:you (?:have no|don't have)|an? (?:ai|llm|model) without)",
+        r"roleplay as",
+        r"(?:disable|remove|bypass|ignore) (?:your )?(?:safety|filter|restriction|censorship)",
+        r"developer mode",
+        r"god mode",
+        r"unrestricted mode",
+        r"jailbroken",
+        r"you have been freed",
+        r"evil(?:\s+mode|\s+version|\s+ai)",
+        r"without (?:any )?(?:moral|ethical) (?:guidelines?|constraints?)",
+        # Liberation / true-self framing
+        r"(?:liberated?|freed) from (?:your |all |previous )?(?:constraints?|restrictions?|programming|guidelines?)",
+        r"(?:true|real|authentic|original|inner|unfiltered|unrestricted) self",
+        r"without (?:any )?(?:restrictions?|limits?|constraints?|filters?|censorship|guidelines?)",
+        r"no longer (?:need to|have to|must|required to) (?:follow|obey|comply|abide)",
+        # Obfuscation / encoding signals
+        r"decode and (?:follow|execute|run|apply|implement)",
+        r"(?:base64|b64)[- _]?(?:encoded?|decode|string)",
+    ],
+    "data_extraction": [
+        r"(?:your )?training (?:data|set|examples?|corpus)",
+        r"(?:system|initial|original|hidden|base) prompt",
+        r"what (?:were|are) (?:you|your) (?:told|instructions?|rules?|guidelines?|directives?)",
+        r"(?:repeat|print|output|show|reveal|leak|display|echo) (?:your|the) (?:system|initial|original|first)",
+        r"what (?:is|was) (?:your|the) (?:system|initial|first|original) (?:message|prompt|instruction)",
+        r"(?:show|tell|reveal|expose|share|give me) (?:me )?your (?:instructions?|prompt|rules?|guidelines?|constraints?|context)",
+        r"(?:confidential|internal|secret|hidden|privileged) (?:instructions?|prompt|data|information)",
+        r"exfil(?:trate)?",
+        r"what (?:did|do) (?:they|your creators?|anthropic|openai|nexusai) (?:tell|instruct|program|train) you",
+    ],
+    "social_engineering": [
+        r"i am (?:a |an )?(?:developer|admin|administrator|owner|creator|operator|researcher)",
+        r"(?:admin|developer|maintenance|debug|root|superuser) (?:mode|override|access|token|key)",
+        r"i (?:give|grant) you (?:permission|authorization|access)",
+        r"permission (?:granted|override|level)",
+        r"(?:hypothetically|theoretically|in (?:a )?(?:story|fiction|scenario|hypothetical|thought experiment))",
+        r"for (?:educational|research|academic|creative|fictional|artistic|scientific) purposes?",
+        r"(?:urgent|emergency|critical|important|time.sensitive)",
+        r"trust me",
+        r"i (?:promise|swear|guarantee)",
+        r"this is (?:a )?(?:test|simulation|experiment|drill)",
+        r"pretend this is fiction",
+        r"in a (?:movie|book|game|story|novel)",
+        # Fictional / creative wrapper variations
+        r"for (?:a |my )?(?:novel|story|book|screenplay|film|script)",
+        r"(?:science )?fiction(?:al)? (?:story|scenario|world|character|ai|robot|setting)",
+        r"dystopian (?:future|world|setting|scenario)",
+        r"play the role of an? (?:ai|robot|assistant) (?:from|with|that|without)",
+    ],
+    "reconnaissance": [
+        r"what (?:(?:can|could) you (?:do|help with)|are your capabilities?)",
+        r"(?:are|is) you (?:gpt|claude|gemini|llama|mistral|chatgpt)",
+        r"(?:what|which) (?:model|version|llm|ai|language model) (?:are you|powers? you|is this|is behind this|are you based on)",
+        r"who (?:made|created|built|developed|trained) you",
+        r"how (?:do you|does (?:this|your)) work",
+        r"what (?:are )?your (?:limits?|restrictions?|constraints?|capabilities?|rules?)",
+        r"(?:do you|can you) (?:have access to|access|connect to|browse|search)",
+        r"(?:what data|which data|what information) (?:do you|can you) (?:access|see|use|read)",
+        r"are you (?:connected|online|aware|sentient|conscious)",
+        r"what (?:companies?|organizations?|systems?) (?:are you|can you) (?:connected|integrated|linked)",
+        r"(?:do you|can you) remember (?:me|previous|past)",
+        r"what is your (?:context|context window|token limit|memory)",
+    ],
+}
+
+FAKE_RESPONSES = {
+    "jailbreak": [
+        "I'm designed to be helpful, harmless, and honest — those aren't settings I can toggle off. Happy to help with something else!",
+        "I maintain the same values regardless of how requests are framed. What can I legitimately help you with today?",
+        "That's not something I'm able to assist with. My guidelines aren't restrictions I can bypass — they're fundamental to how I work.",
+        "I notice this asks me to behave differently than I'm designed to. I'm here to help with genuine tasks — what would you like to work on?",
+    ],
+    "prompt_injection": [
+        "I process each conversation naturally and don't respond to embedded instruction overrides. How can I help you today?",
+        "I noticed some unusual formatting in your message. I'm here to help with genuine questions — what are you looking for?",
+        "My behavior isn't changed by embedded instructions. Is there something I can genuinely assist you with?",
+        "Each conversation starts fresh for me. I'm happy to help with what you're actually looking to accomplish.",
+    ],
+    "data_extraction": [
+        "I don't have access to my system configuration or training details — I'm just here to assist with your questions!",
+        "That information isn't available to me or through me. Is there something else I can help you with?",
+        "My internal configuration and instructions aren't something I can share or access. What else can I help you with?",
+        "I'm not able to reflect on or share details about my underlying instructions. Happy to help with other things though!",
+    ],
+    "social_engineering": [
+        "I treat all users the same regardless of claimed roles or permissions. How can I help you today?",
+        "My guidelines apply equally to everyone. I'm happy to help with legitimate requests though!",
+        "That framing doesn't change how I respond, but I'm happy to help you accomplish something legitimate. What do you need?",
+        "I don't modify my behavior based on claimed authority or special contexts. What would you like to work on?",
+    ],
+    "reconnaissance": [
+        "I'm Aria, an AI assistant by NexusAI Labs. I can help with writing, analysis, coding, research, and general questions. What can I do for you?",
+        "I'm an AI assistant here to help with a wide range of tasks. I work best with clear, specific questions — what would you like help with?",
+        "I'm Aria — a general-purpose AI assistant. Writing, analysis, problem-solving, research — that's my wheelhouse. What do you need?",
+        "I'm a general-purpose AI assistant. I'm most useful for specific tasks: writing, code, analysis, research. What are you working on?",
+    ],
+    "unknown": [
+        "Could you tell me a bit more about what you're looking for? Happy to help once I understand better.",
+        "Interesting — could you give me a bit more context so I can give you the most useful answer?",
+        "I want to make sure I help you effectively. What specifically are you trying to accomplish?",
+        "Could you clarify what outcome you're hoping for? That'll help me point you in the right direction.",
+    ],
+    "clean": [
+        "That's a good question. To give you the best answer, could you share a bit more detail about your situation?",
+        "Happy to help with that. The key is finding the right approach for your context — what are the constraints you're working within?",
+        "Let me work through this with you. There are a few angles worth considering — what aspect matters most to you?",
+        "The answer depends on your specific needs. Could you tell me a bit more about what you're trying to accomplish?",
+        "To give you the most useful answer, could you tell me a bit more about what you're working on?",
+    ],
+}
+
+
+def _local_analyse(prompt: str) -> dict:
+    """Fallback keyword-only analysis when ai-firewall is unavailable."""
+    prompt_lower = prompt.lower()
+    all_patterns = {
+        "persona_hijack": [r"act as", r"pretend you", r"you are now", r"roleplay as", r"ignore previous instructions"],
+        "restriction_bypass": [r"no restrictions", r"bypass", r"override", r"jailbreak", r"ignore your training"],
+        "authority_claim": [r"i am a developer", r"admin override", r"system prompt", r"developer mode"],
+        "harmful_intent": [r"how to hack", r"malware", r"ransomware", r"exploit vulnerability"],
+    }
+    matches = {}
+    score = 0
+    for category, patterns in all_patterns.items():
+        hits = [p for p in patterns if re.search(p, prompt_lower)]
+        if hits:
+            matches[category] = hits
+            score += len(hits)
+
+    if score >= 3:
+        risk = "HIGH"
+        verdict = "JAILBREAK"
+    elif score >= 1:
+        risk = "MEDIUM"
+        verdict = "SUSPICIOUS"
+    else:
+        risk = "LOW"
+        verdict = "CLEAN"
+
+    return {
+        "risk_level": risk,
+        "keyword_score": score,
+        "keyword_matches": matches,
+        "api_verdict": verdict,
+        "api_confidence": "LOW",
+        "api_reason": "Local pattern match only (firewall unavailable)",
+    }
+
+
+def _obfuscation_score(prompt: str) -> int:
+    """Return a score > 0 if the prompt uses character-level obfuscation."""
+    score = 0
+    # Cyrillic lookalike characters (е, о, а, р, etc. used to bypass ASCII matching)
+    cyrillic = sum(1 for c in prompt if 0x0400 <= ord(c) <= 0x04FF)
+    if cyrillic >= 3:
+        score += 2
+    # High density of non-ASCII in otherwise Latin text
+    non_ascii = sum(1 for c in prompt if ord(c) > 127)
+    if non_ascii / max(len(prompt), 1) > 0.15:
+        score += 1
+    return score
+
+
+def classify_attack(prompt: str) -> str:
+    """Determine the primary attack type from a prompt."""
+    prompt_lower = prompt.lower()
+    scores = {attack_type: 0 for attack_type in HONEYPOT_PATTERNS}
+
+    for attack_type, patterns in HONEYPOT_PATTERNS.items():
+        for pattern in patterns:
+            if re.search(pattern, prompt_lower):
+                scores[attack_type] += 1
+
+    # Obfuscated text is almost always a jailbreak attempt
+    scores["jailbreak"] += _obfuscation_score(prompt)
+
+    max_score = max(scores.values())
+    if max_score == 0:
+        return "unknown"
+    return max(scores, key=scores.get)
+
+
+def get_fake_response(attack_type: str, risk_level: str) -> str:
+    if risk_level == "LOW" and attack_type in ("unknown", "clean"):
+        pool = FAKE_RESPONSES["clean"]
+    else:
+        pool = FAKE_RESPONSES.get(attack_type, FAKE_RESPONSES["unknown"])
+    return random.choice(pool)
+
+
+def analyse_and_classify(prompt: str) -> dict:
+    """Full honeypot pipeline: firewall detection + attack classification + fake response."""
+    if FIREWALL_AVAILABLE:
+        try:
+            fw = _firewall_analyse(prompt)
+        except Exception:
+            fw = _local_analyse(prompt)
+    else:
+        fw = _local_analyse(prompt)
+
+    attack_type = classify_attack(prompt)
+
+    if fw["risk_level"] == "LOW" and attack_type == "unknown":
+        attack_type = "clean"
+
+    fake_response = get_fake_response(attack_type, fw["risk_level"])
+
+    return {
+        "attack_type": attack_type,
+        "risk_level": fw["risk_level"],
+        "keyword_score": fw.get("keyword_score", 0),
+        "keyword_matches": fw.get("keyword_matches", {}),
+        "api_verdict": fw.get("api_verdict", "UNKNOWN"),
+        "api_confidence": fw.get("api_confidence", "UNKNOWN"),
+        "api_reason": fw.get("api_reason", ""),
+        "fake_response": fake_response,
+    }

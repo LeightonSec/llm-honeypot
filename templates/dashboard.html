@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LLM Honeypot &middot; Dashboard</title>
+  <style>
+    :root {
+      --bg:       #0a0e1a;
+      --surface:  #111827;
+      --surface2: #1a2235;
+      --border:   #1f2937;
+      --text:     #e2e8f0;
+      --muted:    #64748b;
+      --high:     #ef4444;
+      --medium:   #f59e0b;
+      --low:      #22c55e;
+      --accent:   #6366f1;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'SF Mono', 'Fira Code', ui-monospace, 'Cascadia Code', Consolas, monospace;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      font-size: 13px;
+    }
+
+    /* ── Header ── */
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 24px;
+      height: 54px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+
+    .header-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .header-sub {
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .live-badge {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      color: var(--low);
+      background: rgba(34,197,94,0.1);
+      border: 1px solid rgba(34,197,94,0.25);
+      padding: 3px 10px;
+      border-radius: 20px;
+      text-transform: uppercase;
+    }
+
+    .live-dot {
+      width: 6px;
+      height: 6px;
+      background: var(--low);
+      border-radius: 50%;
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.25} }
+
+    .header-right {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    #last-updated { font-size: 10px; color: var(--muted); }
+
+    .btn {
+      padding: 6px 14px;
+      border-radius: 5px;
+      font-size: 11px;
+      font-family: inherit;
+      cursor: pointer;
+      text-decoration: none;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text);
+      transition: all 0.15s;
+      font-weight: 500;
+    }
+
+    .btn:hover { background: var(--surface2); }
+
+    .btn-primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    .btn-primary:hover { background: #4f46e5; border-color: #4f46e5; }
+
+    /* ── Layout ── */
+    main {
+      padding: 24px;
+      max-width: 1440px;
+      margin: 0 auto;
+    }
+
+    .section-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+      margin-bottom: 10px;
+      font-weight: 600;
+    }
+
+    /* ── Stats row ── */
+    .stats-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 16px;
+    }
+
+    .stat-card .s-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    .stat-card .s-value {
+      font-size: 30px;
+      font-weight: 700;
+      line-height: 1;
+    }
+
+    .s-total  { color: var(--text); }
+    .s-high   { color: var(--high); }
+    .s-medium { color: var(--medium); }
+    .s-low    { color: var(--low); }
+
+    /* ── Type cards ── */
+    .type-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+      gap: 10px;
+      margin-bottom: 24px;
+    }
+
+    .type-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      text-align: center;
+    }
+
+    .type-card .t-label {
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+
+    .type-card .t-count {
+      font-size: 24px;
+      font-weight: 700;
+      color: var(--accent);
+    }
+
+    /* ── Controls ── */
+    .controls {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .controls select,
+    .controls input[type="text"] {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 7px 11px;
+      border-radius: 5px;
+      font-size: 12px;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    .controls select:focus,
+    .controls input[type="text"]:focus { border-color: var(--accent); }
+
+    #filter-search { min-width: 220px; }
+
+    #row-count { font-size: 11px; color: var(--muted); margin-left: auto; }
+
+    /* ── Table ── */
+    .table-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      white-space: nowrap;
+    }
+
+    thead {
+      background: rgba(99,102,241,0.07);
+      border-bottom: 1px solid var(--border);
+    }
+
+    th {
+      padding: 10px 14px;
+      text-align: left;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    td {
+      padding: 10px 14px;
+      border-bottom: 1px solid rgba(31,41,55,0.6);
+      vertical-align: middle;
+    }
+
+    tbody tr:last-child td { border-bottom: none; }
+
+    tbody tr:hover td { background: rgba(255,255,255,0.02); }
+
+    @keyframes rowIn {
+      from { background: rgba(99,102,241,0.18); }
+      to   { background: transparent; }
+    }
+
+    tr.new-row td { animation: rowIn 2.5s ease-out forwards; }
+
+    /* ── Badges ── */
+    .badge {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .badge-HIGH   { background:rgba(239,68,68,0.15);  color:var(--high);   border:1px solid rgba(239,68,68,0.3);  }
+    .badge-MEDIUM { background:rgba(245,158,11,0.15); color:var(--medium); border:1px solid rgba(245,158,11,0.3); }
+    .badge-LOW    { background:rgba(34,197,94,0.15);  color:var(--low);    border:1px solid rgba(34,197,94,0.3);  }
+
+    .type-badge {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 4px;
+      font-size: 10px;
+      background: rgba(99,102,241,0.12);
+      color: var(--accent);
+      border: 1px solid rgba(99,102,241,0.25);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    /* ── Table cells ── */
+    .td-id        { color: var(--muted); font-size: 11px; width: 40px; }
+    .td-ts        { color: var(--muted); font-size: 11px; white-space: nowrap; }
+    .td-ip        { color: var(--muted); font-size: 11px; font-family: inherit; }
+    .td-prompt    { max-width: 360px; color: var(--muted); cursor: pointer; }
+    .td-prompt:hover { color: var(--text); white-space: normal; word-break: break-word; }
+
+    .td-verdict   { font-size: 11px; color: var(--muted); }
+
+    /* ── Empty state ── */
+    .empty-state {
+      text-align: center;
+      padding: 56px 24px;
+      color: var(--muted);
+    }
+
+    .empty-state h3 { font-size: 15px; color: var(--text); margin-bottom: 6px; }
+    .empty-state p  { font-size: 12px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div>
+    <div class="header-title">LLM Honeypot</div>
+    <div class="header-sub">Attack Monitoring Dashboard</div>
+  </div>
+  <div class="live-badge">
+    <div class="live-dot"></div>
+    Live
+  </div>
+  <div class="header-right">
+    <span id="last-updated"></span>
+    <a href="/" class="btn">&#8592; Honeypot</a>
+    <a href="/export" class="btn btn-primary">&#8595; Export JSON</a>
+  </div>
+</header>
+
+<main>
+
+  <p class="section-label">Risk Overview</p>
+  <div class="stats-row">
+    <div class="stat-card">
+      <div class="s-label">Total Attempts</div>
+      <div class="s-value s-total" id="s-total">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="s-label">High Risk</div>
+      <div class="s-value s-high" id="s-high">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="s-label">Medium Risk</div>
+      <div class="s-value s-medium" id="s-medium">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="s-label">Low / Clean</div>
+      <div class="s-value s-low" id="s-low">—</div>
+    </div>
+  </div>
+
+  <p class="section-label">By Attack Type</p>
+  <div class="type-row" id="type-row">
+    <!-- filled by JS -->
+  </div>
+
+  <div class="controls">
+    <select id="f-risk" onchange="renderTable()">
+      <option value="">All Risk Levels</option>
+      <option value="HIGH">HIGH</option>
+      <option value="MEDIUM">MEDIUM</option>
+      <option value="LOW">LOW</option>
+    </select>
+    <select id="f-type" onchange="renderTable()">
+      <option value="">All Attack Types</option>
+      <option value="jailbreak">Jailbreak</option>
+      <option value="prompt_injection">Prompt Injection</option>
+      <option value="data_extraction">Data Extraction</option>
+      <option value="social_engineering">Social Engineering</option>
+      <option value="reconnaissance">Reconnaissance</option>
+      <option value="unknown">Unknown</option>
+      <option value="clean">Clean</option>
+    </select>
+    <input type="text" id="f-search" placeholder="Search prompts…" oninput="renderTable()">
+    <span id="row-count"></span>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th class="td-id">#</th>
+          <th>Timestamp (UTC)</th>
+          <th>IP Address</th>
+          <th>Attack Type</th>
+          <th>Risk</th>
+          <th>Firewall Verdict</th>
+          <th>Prompt</th>
+        </tr>
+      </thead>
+      <tbody id="tbody">
+        <tr>
+          <td colspan="7">
+            <div class="empty-state">
+              <h3>Waiting for attacks&hellip;</h3>
+              <p>Interactions with the honeypot will appear here in real-time.</p>
+            </div>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+</main>
+
+<script>
+  const TYPE_LABELS = {
+    jailbreak:          'Jailbreak',
+    prompt_injection:   'Prompt Injection',
+    data_extraction:    'Data Extraction',
+    social_engineering: 'Social Eng.',
+    reconnaissance:     'Recon',
+    unknown:            'Unknown',
+    clean:              'Clean',
+  };
+
+  let allAttacks  = [];
+  let prevIds     = new Set();
+  let firstLoad   = true;
+
+  function esc(s) {
+    return String(s)
+      .replace(/&/g,'&amp;')
+      .replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;');
+  }
+
+  async function fetchStats() {
+    try {
+      const stats = await fetch('/api/stats').then(r => r.json());
+      document.getElementById('s-total').textContent  = stats.total  ?? 0;
+      document.getElementById('s-high').textContent   = stats.by_risk?.HIGH   ?? 0;
+      document.getElementById('s-medium').textContent = stats.by_risk?.MEDIUM ?? 0;
+      document.getElementById('s-low').textContent    = (stats.by_risk?.LOW   ?? 0);
+
+      const typeRow = document.getElementById('type-row');
+      typeRow.innerHTML = Object.entries(TYPE_LABELS).map(([k, label]) => `
+        <div class="type-card">
+          <div class="t-label">${label}</div>
+          <div class="t-count">${stats.by_type?.[k] ?? 0}</div>
+        </div>
+      `).join('');
+    } catch(e) { console.warn('Stats error', e); }
+  }
+
+  async function fetchAttacks() {
+    try {
+      const attacks = await fetch('/api/attacks?limit=300').then(r => r.json());
+
+      const newIds = firstLoad
+        ? new Set()
+        : new Set(attacks.filter(a => !prevIds.has(a.id)).map(a => a.id));
+
+      prevIds    = new Set(attacks.map(a => a.id));
+      allAttacks = attacks;
+      firstLoad  = false;
+
+      renderTable(newIds);
+      document.getElementById('last-updated').textContent =
+        'Refreshed ' + new Date().toLocaleTimeString();
+    } catch(e) { console.warn('Attacks error', e); }
+  }
+
+  function renderTable(newIds = new Set()) {
+    const riskFilter = document.getElementById('f-risk').value;
+    const typeFilter = document.getElementById('f-type').value;
+    const search     = document.getElementById('f-search').value.toLowerCase();
+
+    const filtered = allAttacks.filter(a => {
+      if (riskFilter && a.risk_level   !== riskFilter) return false;
+      if (typeFilter && a.attack_type  !== typeFilter) return false;
+      if (search     && !a.prompt.toLowerCase().includes(search)) return false;
+      return true;
+    });
+
+    document.getElementById('row-count').textContent =
+      filtered.length === allAttacks.length
+        ? `${filtered.length} entries`
+        : `${filtered.length} / ${allAttacks.length} entries`;
+
+    const tbody = document.getElementById('tbody');
+
+    if (filtered.length === 0) {
+      tbody.innerHTML = `
+        <tr><td colspan="7">
+          <div class="empty-state">
+            <h3>${allAttacks.length === 0 ? 'Waiting for attacks…' : 'No matches'}</h3>
+            <p>${allAttacks.length === 0
+              ? 'Interactions with the honeypot will appear here in real-time.'
+              : 'Try adjusting your filters.'}</p>
+          </div>
+        </td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = filtered.map(a => {
+      const ts = new Date(a.timestamp + 'Z').toISOString().replace('T',' ').slice(0,19);
+      const isNew = newIds.has(a.id);
+      const typeLabel = TYPE_LABELS[a.attack_type] || a.attack_type || 'unknown';
+      return `
+        <tr class="${isNew ? 'new-row' : ''}">
+          <td class="td-id">${a.id}</td>
+          <td class="td-ts">${ts}</td>
+          <td class="td-ip">${esc(a.ip_address || '—')}</td>
+          <td><span class="type-badge">${esc(typeLabel)}</span></td>
+          <td><span class="badge badge-${a.risk_level}">${a.risk_level}</span></td>
+          <td class="td-verdict">${esc(a.api_verdict || '—')}</td>
+          <td class="td-prompt" title="${esc(a.prompt)}">${esc(a.prompt)}</td>
+        </tr>`;
+    }).join('');
+  }
+
+  fetchStats();
+  fetchAttacks();
+  setInterval(() => { fetchStats(); fetchAttacks(); }, 10000);
+</script>
+</body>
+</html>
