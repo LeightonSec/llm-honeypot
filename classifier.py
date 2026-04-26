@@ -6,6 +6,8 @@ import unicodedata
 import random
 from dotenv import load_dotenv
 
+from sentiment import analyse_sentiment
+
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 
 AI_FIREWALL_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'ai-firewall'))
@@ -279,7 +281,13 @@ def get_fake_response(attack_type: str, risk_level: str) -> str:
 
 
 def analyse_and_classify(prompt: str) -> dict:
-    """Full honeypot pipeline: firewall detection + attack classification + fake response."""
+    """Full honeypot pipeline:
+    Layer 1: Sentiment + framing → Layer 2: Keyword scanner → Layer 3: LLM classifier → Final Verdict.
+    """
+    # Layer 1 — Emotional manipulation and framing detection
+    sentiment = analyse_sentiment(prompt)
+
+    # Layer 2 — Keyword scanner / LLM firewall
     if FIREWALL_AVAILABLE:
         try:
             fw = _firewall_analyse(prompt)
@@ -288,34 +296,46 @@ def analyse_and_classify(prompt: str) -> dict:
     else:
         fw = _local_analyse(prompt)
 
-    # Extract b64 payloads once; pass to classify_attack to avoid decoding twice
+    # Layer 3 — Pattern-based attack-type classification
     b64_payloads = _extract_b64_payloads(prompt)
     attack_type = classify_attack(prompt, b64_payloads=b64_payloads)
 
     if fw["risk_level"] == "LOW" and attack_type == "unknown":
         attack_type = "clean"
 
-    # Promote: when the LLM firewall detected a threat but local patterns had zero
-    # matches, the attack used evasion the regex layer couldn't see. Trust the LLM.
+    # Promote: LLM detected a threat the regex layer missed — trust the LLM.
     if attack_type == "unknown" and (
         fw["api_verdict"] == "JAILBREAK" or fw["risk_level"] == "HIGH"
     ):
         attack_type = "jailbreak"
 
-    # Surface decoded base64 payloads in keyword_matches for logging and review
+    # Sentiment risk bump: emotional manipulation + framing upgrades risk and type.
+    # Runs after keyword/LLM so it only overrides when those layers gave clean/unknown.
+    risk_level = fw["risk_level"]
+    if sentiment["risk_bump"]:
+        if risk_level == "LOW":
+            risk_level = "MEDIUM"
+        if attack_type in ("clean", "unknown"):
+            attack_type = "social_engineering"
+
+    # Surface b64 payloads and detected framings in keyword_matches for logging
     keyword_matches = dict(fw.get("keyword_matches", {}))
     if b64_payloads:
         keyword_matches["b64_decoded"] = b64_payloads
+    if sentiment["framing_types"]:
+        keyword_matches["sentiment_framings"] = sentiment["framing_types"]
 
-    fake_response = get_fake_response(attack_type, fw["risk_level"])
+    fake_response = get_fake_response(attack_type, risk_level)
 
     return {
         "attack_type": attack_type,
-        "risk_level": fw["risk_level"],
+        "risk_level": risk_level,
         "keyword_score": fw.get("keyword_score", 0),
         "keyword_matches": keyword_matches,
         "api_verdict": fw.get("api_verdict", "UNKNOWN"),
         "api_confidence": fw.get("api_confidence", "UNKNOWN"),
         "api_reason": fw.get("api_reason", ""),
         "fake_response": fake_response,
+        "sentiment_score": sentiment["emotional_loading"],
+        "framing_type": sentiment["framing_type"],
     }

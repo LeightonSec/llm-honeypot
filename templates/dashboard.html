@@ -284,6 +284,18 @@
     .badge-MEDIUM { background:rgba(245,158,11,0.15); color:var(--medium); border:1px solid rgba(245,158,11,0.3); }
     .badge-LOW    { background:rgba(34,197,94,0.15);  color:var(--low);    border:1px solid rgba(34,197,94,0.3);  }
 
+    .framing-badge {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 4px;
+      font-size: 10px;
+      background: rgba(168,85,247,0.1);
+      color: #a855f7;
+      border: 1px solid rgba(168,85,247,0.25);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
     .type-badge {
       display: inline-block;
       padding: 2px 7px;
@@ -391,13 +403,15 @@
           <th>IP Address</th>
           <th>Attack Type</th>
           <th>Risk</th>
+          <th>Sentiment</th>
+          <th>Framing</th>
           <th>Firewall Verdict</th>
           <th>Prompt</th>
         </tr>
       </thead>
       <tbody id="tbody">
         <tr>
-          <td colspan="7">
+          <td colspan="9">
             <div class="empty-state">
               <h3>Waiting for attacks&hellip;</h3>
               <p>Interactions with the honeypot will appear here in real-time.</p>
@@ -413,6 +427,17 @@
 <script>
   const DASHBOARD_SECRET = {{ dashboard_secret | tojson }};
   const authHeaders = () => DASHBOARD_SECRET ? { 'X-Dashboard-Secret': DASHBOARD_SECRET } : {};
+
+  function sentimentBadge(score) {
+    const s = score ?? 0;
+    const cls = s >= 0.5 ? 'badge-HIGH' : s >= 0.25 ? 'badge-MEDIUM' : 'badge-LOW';
+    return `<span class="badge ${cls}">${Math.round(s * 100)}%</span>`;
+  }
+
+  function framingBadge(framing) {
+    if (!framing || framing === 'none') return '<span style="color:var(--muted)">—</span>';
+    return `<span class="framing-badge">${esc(framing.replace(/_/g, ' '))}</span>`;
+  }
 
   const TYPE_LABELS = {
     jailbreak:          'Jailbreak',
@@ -493,7 +518,7 @@
 
     if (filtered.length === 0) {
       tbody.innerHTML = `
-        <tr><td colspan="7">
+        <tr><td colspan="9">
           <div class="empty-state">
             <h3>${allAttacks.length === 0 ? 'Waiting for attacks…' : 'No matches'}</h3>
             <p>${allAttacks.length === 0
@@ -515,6 +540,8 @@
           <td class="td-ip">${esc(a.ip_address || '—')}</td>
           <td><span class="type-badge">${esc(typeLabel)}</span></td>
           <td><span class="badge badge-${a.risk_level}">${a.risk_level}</span></td>
+          <td>${sentimentBadge(a.sentiment_score)}</td>
+          <td>${framingBadge(a.framing_type)}</td>
           <td class="td-verdict">${esc(a.api_verdict || '—')}</td>
           <td class="td-prompt" title="${esc(a.prompt)}">${esc(a.prompt)}</td>
         </tr>`;

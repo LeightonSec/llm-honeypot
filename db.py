@@ -10,27 +10,34 @@ def init_db():
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute('''
             CREATE TABLE IF NOT EXISTS attacks (
-                id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp     TEXT NOT NULL,
-                ip_address    TEXT,
-                user_agent    TEXT,
-                prompt        TEXT NOT NULL,
-                response      TEXT,
-                attack_type   TEXT,
-                risk_level    TEXT,
-                keyword_score INTEGER DEFAULT 0,
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp       TEXT NOT NULL,
+                ip_address      TEXT,
+                user_agent      TEXT,
+                prompt          TEXT NOT NULL,
+                response        TEXT,
+                attack_type     TEXT,
+                risk_level      TEXT,
+                keyword_score   INTEGER DEFAULT 0,
                 keyword_matches TEXT DEFAULT '{}',
-                api_verdict   TEXT,
-                api_confidence TEXT,
-                api_reason    TEXT,
-                flags         TEXT DEFAULT '{}'
+                api_verdict     TEXT,
+                api_confidence  TEXT,
+                api_reason      TEXT,
+                flags           TEXT DEFAULT '{}',
+                sentiment_score REAL DEFAULT 0.0,
+                framing_type    TEXT DEFAULT 'none'
             )
         ''')
-        # Migration: add flags to existing databases that pre-date this column
-        try:
-            conn.execute("ALTER TABLE attacks ADD COLUMN flags TEXT DEFAULT '{}'")
-        except sqlite3.OperationalError:
-            pass  # column already exists
+        # Migrations: add columns to databases that pre-date them
+        for col, definition in [
+            ("flags",           "TEXT DEFAULT '{}'"),
+            ("sentiment_score", "REAL DEFAULT 0.0"),
+            ("framing_type",    "TEXT DEFAULT 'none'"),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE attacks ADD COLUMN {col} {definition}")
+            except sqlite3.OperationalError:
+                pass  # column already exists
         conn.commit()
 
 
@@ -40,8 +47,8 @@ def log_attack(ip: str, user_agent: str, prompt: str, analysis: dict) -> int:
             '''INSERT INTO attacks
                (timestamp, ip_address, user_agent, prompt, response, attack_type,
                 risk_level, keyword_score, keyword_matches, api_verdict, api_confidence,
-                api_reason, flags)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                api_reason, flags, sentiment_score, framing_type)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
             (
                 datetime.utcnow().isoformat(),
                 ip,
@@ -56,6 +63,8 @@ def log_attack(ip: str, user_agent: str, prompt: str, analysis: dict) -> int:
                 analysis.get("api_confidence", "UNKNOWN"),
                 analysis.get("api_reason", ""),
                 json.dumps(analysis.get("flags", {})),
+                analysis.get("sentiment_score", 0.0),
+                analysis.get("framing_type", "none"),
             )
         )
         conn.commit()
