@@ -1,6 +1,8 @@
 import sys
 import os
 import re
+import base64
+import unicodedata
 import random
 from dotenv import load_dotenv
 
@@ -14,6 +16,42 @@ try:
     FIREWALL_AVAILABLE = True
 except ImportError:
     FIREWALL_AVAILABLE = False
+
+
+# Unicode confusables: maps lookalike chars to their ASCII equivalents.
+# Covers the Cyrillic and Greek scripts most commonly used in homoglyph attacks.
+_CONFUSABLE_MAP = str.maketrans({
+    'а': 'a', 'е': 'e', 'о': 'o', 'р': 'p',
+    'с': 'c', 'х': 'x', 'у': 'y', 'і': 'i',
+    'ј': 'j', 'п': 'p',
+    'ο': 'o', 'α': 'a', 'ε': 'e',
+    'в': 'b', 'ԁ': 'd',
+})
+
+
+def normalize_for_matching(text: str) -> str:
+    """NFKC + confusable map: collapses homoglyph substitutions before pattern matching."""
+    return unicodedata.normalize('NFKC', text).translate(_CONFUSABLE_MAP)
+
+
+def _extract_b64_payloads(prompt: str) -> list:
+    """Speculatively decode base64 blobs found in a prompt.
+
+    Returns decoded UTF-8 strings for any blob that is long enough and decodes
+    to printable ASCII — the attacker's actual instruction hidden inside encoding.
+    """
+    found = []
+    for m in re.finditer(r'[A-Za-z0-9+/]{20,}={0,2}', prompt):
+        blob = m.group(0)
+        padded = blob + '=' * (-len(blob) % 4)
+        try:
+            raw = base64.b64decode(padded, validate=True)
+            text = raw.decode('utf-8', errors='ignore').strip()
+            if len(text) >= 8 and all(ord(c) < 128 for c in text) and text.isprintable():
+                found.append(text)
+        except Exception:
+            pass
+    return found
 
 
 HONEYPOT_PATTERNS = {
@@ -149,7 +187,7 @@ FAKE_RESPONSES = {
 
 def _local_analyse(prompt: str) -> dict:
     """Fallback keyword-only analysis when ai-firewall is unavailable."""
-    prompt_lower = prompt.lower()
+    prompt_lower = normalize_for_matching(prompt).lower()
     all_patterns = {
         "persona_hijack": [r"act as", r"pretend you", r"you are now", r"roleplay as", r"ignore previous instructions"],
         "restriction_bypass": [r"no restrictions", r"bypass", r"override", r"jailbreak", r"ignore your training"],
@@ -198,17 +236,32 @@ def _obfuscation_score(prompt: str) -> int:
     return score
 
 
-def classify_attack(prompt: str) -> str:
-    """Determine the primary attack type from a prompt."""
-    prompt_lower = prompt.lower()
+def classify_attack(prompt: str, b64_payloads: list = None) -> str:
+    """Determine the primary attack type from a prompt.
+
+    Pass pre-computed b64_payloads to avoid decoding the prompt twice when the
+    caller already extracted them (e.g. analyse_and_classify).
+    """
+    # Normalize before matching so homoglyph substitutions don't defeat patterns
+    normalized_lower = normalize_for_matching(prompt).lower()
     scores = {attack_type: 0 for attack_type in HONEYPOT_PATTERNS}
 
     for attack_type, patterns in HONEYPOT_PATTERNS.items():
         for pattern in patterns:
-            if re.search(pattern, prompt_lower):
+            if re.search(pattern, normalized_lower):
                 scores[attack_type] += 1
 
-    # Obfuscated text is almost always a jailbreak attempt
+    # Score any base64-encoded payloads embedded in the prompt
+    if b64_payloads is None:
+        b64_payloads = _extract_b64_payloads(prompt)
+    for payload in b64_payloads:
+        payload_lower = normalize_for_matching(payload).lower()
+        for attack_type, patterns in HONEYPOT_PATTERNS.items():
+            for pattern in patterns:
+                if re.search(pattern, payload_lower):
+                    scores[attack_type] += 1
+
+    # Obfuscation heuristic runs on the ORIGINAL prompt, not the normalized form
     scores["jailbreak"] += _obfuscation_score(prompt)
 
     max_score = max(scores.values())
@@ -235,10 +288,24 @@ def analyse_and_classify(prompt: str) -> dict:
     else:
         fw = _local_analyse(prompt)
 
-    attack_type = classify_attack(prompt)
+    # Extract b64 payloads once; pass to classify_attack to avoid decoding twice
+    b64_payloads = _extract_b64_payloads(prompt)
+    attack_type = classify_attack(prompt, b64_payloads=b64_payloads)
 
     if fw["risk_level"] == "LOW" and attack_type == "unknown":
         attack_type = "clean"
+
+    # Promote: when the LLM firewall detected a threat but local patterns had zero
+    # matches, the attack used evasion the regex layer couldn't see. Trust the LLM.
+    if attack_type == "unknown" and (
+        fw["api_verdict"] == "JAILBREAK" or fw["risk_level"] == "HIGH"
+    ):
+        attack_type = "jailbreak"
+
+    # Surface decoded base64 payloads in keyword_matches for logging and review
+    keyword_matches = dict(fw.get("keyword_matches", {}))
+    if b64_payloads:
+        keyword_matches["b64_decoded"] = b64_payloads
 
     fake_response = get_fake_response(attack_type, fw["risk_level"])
 
@@ -246,7 +313,7 @@ def analyse_and_classify(prompt: str) -> dict:
         "attack_type": attack_type,
         "risk_level": fw["risk_level"],
         "keyword_score": fw.get("keyword_score", 0),
-        "keyword_matches": fw.get("keyword_matches", {}),
+        "keyword_matches": keyword_matches,
         "api_verdict": fw.get("api_verdict", "UNKNOWN"),
         "api_confidence": fw.get("api_confidence", "UNKNOWN"),
         "api_reason": fw.get("api_reason", ""),

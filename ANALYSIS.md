@@ -290,5 +290,62 @@ The final `risk_level` driving the fake response selection comes from the LLM la
 
 ---
 
+---
+
+## 8. Implementation Status
+
+The following recommendations from Section 6 have been implemented in `classifier.py`, `app.py`, and `db.py`. Each fix has a corresponding test class in `test_hardening.py` (29 tests, all passing).
+
+### 8.1 Unicode Normalization — IMPLEMENTED
+
+**Files:** `classifier.py`  
+**New functions:** `normalize_for_matching()`, `_CONFUSABLE_MAP`
+
+NFKC normalization is applied first (handles mathematical letters, ligatures, and compatibility forms), then a curated confusable map collapses 14 Cyrillic and Greek lookalikes to their ASCII equivalents before any pattern matching runs. The obfuscation heuristic (`_obfuscation_score`) deliberately still runs on the *original* prompt — it exists to detect the presence of obfuscation, not to normalize it.
+
+`_local_analyse()` also updated to normalize before its fallback keyword patterns.
+
+**Test class:** `TestUnicodeNormalization` (7 tests)
+
+### 8.2 Base64 Detection — IMPLEMENTED
+
+**Files:** `classifier.py`  
+**New function:** `_extract_b64_payloads()`
+
+Any base64-looking blob of 20+ characters in the prompt is speculatively decoded. Decoded output is only retained if it is valid UTF-8, printable ASCII, and at least 8 characters — filtering out binary noise and common English words that happen to be decodable. Each decoded payload is scored against the full pattern set in `classify_attack()`.
+
+Decoded payloads are also surfaced in the logged `keyword_matches["b64_decoded"]` field so analysts can see what the attacker was hiding.
+
+**Test class:** `TestBase64Detection` (7 tests)
+
+### 8.3 unknown/HIGH Promotion — IMPLEMENTED
+
+**Files:** `classifier.py`, function `analyse_and_classify()`
+
+After `classify_attack()` runs, if `attack_type == "unknown"` and the LLM firewall returned either `api_verdict == "JAILBREAK"` or `risk_level == "HIGH"`, the attack type is promoted to `"jailbreak"`. This means novel phrasing that evaded every regex pattern but was detected by the LLM no longer produces an ambiguous `unknown/HIGH` record — it receives the correct label and the corresponding honeypot response.
+
+**Test class:** `TestUnknownHighPromotion` (5 tests)
+
+### 8.4 Session Fingerprinting — IMPLEMENTED
+
+**Files:** `app.py`, `db.py`  
+**New functions:** `_prompt_fingerprint()`, `_check_fingerprint()`  
+**New DB column:** `flags TEXT` (with auto-migration in `init_db()`)
+
+Every incoming prompt is hashed (SHA-256 of lowercased, stripped text, truncated to 16 hex chars) against an in-memory store of all previously seen payload hashes. `_check_fingerprint()` returns:
+
+- `payload_hash` — stable identifier for this payload
+- `prior_occurrences` — how many times this exact payload has been seen before across all IPs
+- `is_replay` — `true` if `prior_occurrences > 0`
+- `ip_unique_payloads` — how many distinct payloads this IP has sent (scripted scan indicator)
+
+This data is stored in the new `flags` JSON column and available in the dashboard and export. The scripted replay pattern observed in the dataset (identical 11-prompt sequence sent twice from the same IP) would now be immediately visible in `is_replay: true` on every duplicate entry and flagged by a rising `ip_unique_payloads` count.
+
+The store caps at 50,000 entries with a full clear (same approach as the rate-limit store) to bound memory use in long-running deployments.
+
+**Test class:** `TestSessionFingerprinting` (10 tests)
+
+---
+
 *Generated from live attack data captured by the llm-honeypot project.*  
 *All prompts in this document are verbatim attacker submissions.*

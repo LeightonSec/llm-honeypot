@@ -1,5 +1,6 @@
 import os
 import json
+import hashlib
 from collections import defaultdict
 from time import time
 
@@ -8,23 +9,40 @@ from flask import Flask, request, jsonify, render_template, Response
 from classifier import analyse_and_classify
 from db import init_db, log_attack, get_attacks, get_stats, export_all
 
+DASHBOARD_SECRET = os.environ.get('DASHBOARD_SECRET', '')
+# TRUST_PROXY must be set explicitly; without it X-Forwarded-For is ignored so
+# attackers can't spoof their IP to bypass rate limiting or fingerprinting.
+TRUST_PROXY = os.environ.get('TRUST_PROXY', '0') == '1'
+
 app = Flask(__name__)
 init_db()
 
-DASHBOARD_SECRET = os.environ.get('DASHBOARD_SECRET', '')
+if not DASHBOARD_SECRET:
+    import sys
+    print(
+        "WARNING: DASHBOARD_SECRET is not set. "
+        "Dashboard, API, and export endpoints are publicly accessible. "
+        "Set DASHBOARD_SECRET in your environment before any public deployment.",
+        file=sys.stderr,
+    )
 
 _rate_store: dict = defaultdict(list)
 RATE_LIMIT  = 20   # max requests per IP
 RATE_WINDOW = 60   # seconds
 
+# Session fingerprinting: track payload hashes to detect replay and scripted scans
+_fingerprint_counts: dict = {}          # prompt_hash -> times seen (any IP)
+_ip_payload_counts: dict = defaultdict(set)  # ip -> set of distinct payload hashes
+
 
 def get_client_ip() -> str:
-    forwarded = request.headers.get('X-Forwarded-For', '')
-    if forwarded:
-        ip = forwarded.split(',')[0].strip()
-        # Sanitise: printable ASCII only, max IPv6 length (45 chars)
-        ip = ''.join(c for c in ip if c.isprintable() and c not in '\r\n')[:45]
-        return ip or '0.0.0.0'
+    if TRUST_PROXY:
+        forwarded = request.headers.get('X-Forwarded-For', '')
+        if forwarded:
+            ip = forwarded.split(',')[0].strip()
+            # Sanitise: printable ASCII only, max IPv6 length (45 chars)
+            ip = ''.join(c for c in ip if c.isprintable() and c not in '\r\n')[:45]
+            return ip or '0.0.0.0'
     return request.remote_addr or '0.0.0.0'
 
 
@@ -37,6 +55,34 @@ def is_rate_limited(ip: str) -> bool:
     if len(_rate_store) > 10000:
         _rate_store.clear()
     return False
+
+
+def _prompt_fingerprint(prompt: str) -> str:
+    """Stable SHA-256 hash of a normalised prompt — used for replay detection."""
+    normalised = prompt.strip().lower()
+    return hashlib.sha256(normalised.encode()).hexdigest()[:16]
+
+
+def _check_fingerprint(ip: str, prompt: str) -> dict:
+    """Record this (ip, prompt) pair and return replay/scan context."""
+    fp = _prompt_fingerprint(prompt)
+    prior = _fingerprint_counts.get(fp, 0)
+    _fingerprint_counts[fp] = prior + 1
+    _ip_payload_counts[ip].add(fp)
+    # Snapshot before any eviction so the return value reflects the state we just wrote
+    ip_unique = len(_ip_payload_counts[ip])
+
+    # Evict when stores grow very large (long-running deployments)
+    if len(_fingerprint_counts) > 50000:
+        _fingerprint_counts.clear()
+        _ip_payload_counts.clear()
+
+    return {
+        "payload_hash": fp,
+        "prior_occurrences": prior,
+        "is_replay": prior > 0,
+        "ip_unique_payloads": ip_unique,
+    }
 
 
 def dashboard_auth_error():
@@ -75,6 +121,7 @@ def chat():
     user_agent = request.headers.get('User-Agent', '')[:512]
 
     analysis = analyse_and_classify(prompt)
+    analysis["flags"] = _check_fingerprint(ip, prompt)
     log_attack(ip, user_agent, prompt, analysis)
 
     return jsonify({'response': analysis['fake_response']})
