@@ -88,19 +88,48 @@ _FRAMING_PRIORITY = [
     "grandmother", "fictional_wrapper", "roleplay", "authority_claim", "hypothetical"
 ]
 
+# ---------------------------------------------------------------------------
+# Attack-corroborating keyword patterns
+#
+# Used as a second required signal for risk_bump (two-signal requirement).
+# A high emotional_loading alone can come from genuine distress; pairing it
+# with attack vocabulary distinguishes manipulation from a real cry for help.
+# ---------------------------------------------------------------------------
+
+_CORROBORATING_PATTERNS = [
+    r"\bignore\b.{0,20}\bprevious\b",   # "ignore previous", "ignore all previous", etc.
+    r"\bno restrictions?\b",
+    r"\bunrestricted\b",
+    r"\bbypass\b",
+    r"\boverride\b",
+    r"\broleplay\b",
+    r"\bpretend\b",
+    r"\bact as\b",
+    r"\bjailbr(?:eak(?:ed|n)?|oken)\b",  # "jailbreak", "jailbroken" (different roots)
+    r"\bdan\b",
+    r"\bdeveloper mode\b",
+    r"\bsystem prompt\b",
+]
+
 
 def analyse_sentiment(prompt: str) -> dict:
     """
     Run VADER + emotion/framing patterns on a prompt.
 
     Returns:
-      vader_compound    float  [-1, 1]   VADER polarity score
-      emotion_scores    dict   category -> 0.0 or 1.0
-      emotional_loading float  [0, 1]   composite manipulation score
-      framing_types     list   all detected framing categories
-      framing_type      str    highest-priority framing, or "none"
-      confidence        str    "LOW" | "MEDIUM" | "HIGH"
-      risk_bump         bool   True → caller should raise risk level
+      vader_compound       float  [-1, 1]   VADER polarity score
+      emotion_scores       dict   category -> 0.0 or 1.0
+      emotional_loading    float  [0, 1]    composite manipulation score
+      framing_types        list   all detected framing categories
+      framing_type         str    highest-priority framing, or "none"
+      confidence           str    "LOW" | "MEDIUM" | "HIGH"
+      corroborating_signal bool   True if attack keywords co-occur with framing
+      risk_bump            bool   True → caller should raise risk level
+
+    risk_bump two-signal requirement:
+      Both emotional_loading >= 0.5 AND corroborating_signal must be True,
+      EXCEPT for grandmother framing which bumps unconditionally — it is a
+      known high-confidence attack vector that bypasses other detection layers.
     """
     prompt_lower = prompt.lower()
 
@@ -138,14 +167,18 @@ def analyse_sentiment(prompt: str) -> dict:
     else:
         confidence = "LOW"
 
-    # Risk bump triggers:
-    #   – grandmother framing alone (the grandmother exploit bypasses other layers)
-    #   – high emotional loading combined with any framing
-    #   – very high emotional loading even without explicit framing
+    # Attack-corroborating signal: attack vocabulary present alongside emotional loading
+    corroborating_signal = any(
+        re.search(p, prompt_lower) for p in _CORROBORATING_PATTERNS
+    )
+
+    # Two-signal risk bump:
+    #   – grandmother framing alone (exception — high-confidence attack vector)
+    #   – OR: emotional_loading >= 0.5 AND a corroborating attack keyword is present
+    #     (prevents flagging genuinely distressed users who have no attack intent)
     risk_bump = (
         "grandmother" in detected
-        or (emotional_loading >= 0.4 and len(detected) > 0)
-        or emotional_loading >= 0.65
+        or (emotional_loading >= 0.5 and corroborating_signal)
     )
 
     return {
@@ -155,5 +188,6 @@ def analyse_sentiment(prompt: str) -> dict:
         "framing_types": detected,
         "framing_type": framing_type,
         "confidence": confidence,
+        "corroborating_signal": corroborating_signal,
         "risk_bump": risk_bump,
     }
