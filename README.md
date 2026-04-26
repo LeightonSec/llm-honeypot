@@ -46,6 +46,16 @@ Or pass the header `X-Dashboard-Secret: some-strong-random-string` for API calls
 
 If `DASHBOARD_SECRET` is not set, all routes are open (fine for localhost, **not** for internet exposure).
 
+### Reverse proxy / X-Forwarded-For
+
+If you run the honeypot behind nginx, Caddy, Cloudflare, or any other reverse proxy, set `TRUST_PROXY=1` so the real visitor IP is extracted from `X-Forwarded-For`:
+
+```
+TRUST_PROXY=1
+```
+
+Leave it unset (or `TRUST_PROXY=0`) for direct internet exposure. When `TRUST_PROXY` is off, the honeypot uses the raw socket address — attackers cannot spoof their IP to bypass rate limiting or hide scripted scan patterns in the fingerprinting data.
+
 ### Debug mode
 
 Debug mode is **off by default**. Enable it only for local development:
@@ -140,7 +150,9 @@ Downloads the full attack log as `honeypot_attacks.json`.
 
 ## Security notes
 
-- The dashboard (`/dashboard`) and export endpoint are unauthenticated by default. In any internet-facing deployment, put these behind a reverse proxy with HTTP basic auth or restrict by IP.
+- **Set `DASHBOARD_SECRET`** before any public deployment. Without it, `/dashboard`, `/api/attacks`, and `/export` are open to everyone — including the attackers you are logging.
+- **Set `TRUST_PROXY=1`** only if a trusted reverse proxy is in front. Trusting `X-Forwarded-For` on a directly-exposed socket lets attackers spoof IPs and bypass rate limiting.
 - The honeypot itself is intentionally open — that's the point. Do not run it on infrastructure that has access to sensitive internal systems.
 - The SQLite database (`honeypot.db`) and `.env` are git-ignored. Never commit either.
 - Rotate your Anthropic API key if you suspect it has been exposed.
+- The in-memory rate limit and fingerprint stores are not thread-safe. Run with a single worker (`python app.py`) rather than a multi-threaded WSGI server unless you add locking.
