@@ -1,9 +1,15 @@
 """
-Tests for the four hardening fixes applied after ANALYSIS.md:
-  1. Unicode normalization — homoglyph attacks normalize before pattern matching
-  2. Base64 detection    — encoded payloads are decoded and scanned
+Tests for the hardening fixes applied after ANALYSIS.md and the security audit:
+  1. Unicode normalization  — homoglyph attacks normalize before pattern matching
+  2. Base64 detection       — encoded payloads are decoded and scanned
   3. unknown/HIGH promotion — LLM-detected jailbreaks get the right label
   4. Session fingerprinting — replayed and scripted payloads are flagged
+  5. Negative limit guard   — limit=-1 on /api/attacks is clamped to 0
+  6. Header-only auth       — URL query-param secret is no longer accepted
+  7. Admin rate limiting    — /api/stats, /api/attacks, /export are rate-limited
+  8. LRU eviction           — _rate_store evicts 20% oldest instead of clearing all
+  9. IP validation          — invalid X-Forwarded-For falls back to remote_addr
+ 10. Security headers       — X-Content-Type-Options, X-Frame-Options, etc. on all responses
 """
 import sys
 import os
@@ -278,3 +284,270 @@ class TestSessionFingerprinting:
         r = _app._check_fingerprint("127.0.0.1", "test")
         assert isinstance(r["payload_hash"], str)
         assert all(c in "0123456789abcdef" for c in r["payload_hash"])
+
+
+# ---------------------------------------------------------------------------
+# Fix 5 — Negative limit guard
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def open_client():
+    """Flask test client with DASHBOARD_SECRET disabled and a clean rate store."""
+    original_secret = _app.DASHBOARD_SECRET
+    _app.DASHBOARD_SECRET = ''
+    _app._rate_store.clear()
+    client = _app.app.test_client()
+    yield client
+    _app.DASHBOARD_SECRET = original_secret
+    _app._rate_store.clear()
+
+
+class TestNegativeLimitGuard:
+    def test_negative_limit_returns_empty_list(self, open_client):
+        r = open_client.get('/api/attacks?limit=-1')
+        assert r.status_code == 200
+        assert r.get_json() == []
+
+    def test_zero_limit_returns_empty_list(self, open_client):
+        r = open_client.get('/api/attacks?limit=0')
+        assert r.status_code == 200
+        assert r.get_json() == []
+
+    def test_positive_limit_accepted(self, open_client):
+        r = open_client.get('/api/attacks?limit=10')
+        assert r.status_code == 200
+        assert isinstance(r.get_json(), list)
+
+    def test_limit_above_500_capped(self, open_client):
+        # Can only verify the request succeeds; the cap is enforced server-side
+        r = open_client.get('/api/attacks?limit=9999')
+        assert r.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Fix 6 — Header-only auth (URL query param removed)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def secret_client():
+    """Flask test client with a known DASHBOARD_SECRET and a clean rate store."""
+    original_secret = _app.DASHBOARD_SECRET
+    _app.DASHBOARD_SECRET = 'test-secret-hardening'
+    _app._rate_store.clear()
+    client = _app.app.test_client()
+    yield client
+    _app.DASHBOARD_SECRET = original_secret
+    _app._rate_store.clear()
+
+
+class TestHeaderOnlyAuth:
+    def test_url_param_secret_rejected(self, secret_client):
+        r = secret_client.get('/api/stats?secret=test-secret-hardening')
+        assert r.status_code == 401
+
+    def test_url_param_secret_rejected_on_attacks(self, secret_client):
+        r = secret_client.get('/api/attacks?secret=test-secret-hardening')
+        assert r.status_code == 401
+
+    def test_url_param_secret_rejected_on_export(self, secret_client):
+        r = secret_client.get('/export?secret=test-secret-hardening')
+        assert r.status_code == 401
+
+    def test_header_secret_accepted_on_stats(self, secret_client):
+        r = secret_client.get('/api/stats',
+                               headers={'X-Dashboard-Secret': 'test-secret-hardening'})
+        assert r.status_code == 200
+
+    def test_header_secret_accepted_on_attacks(self, secret_client):
+        r = secret_client.get('/api/attacks',
+                               headers={'X-Dashboard-Secret': 'test-secret-hardening'})
+        assert r.status_code == 200
+
+    def test_wrong_header_value_rejected(self, secret_client):
+        r = secret_client.get('/api/stats',
+                               headers={'X-Dashboard-Secret': 'wrong-secret'})
+        assert r.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Fix 7 — Admin endpoints are rate-limited
+# ---------------------------------------------------------------------------
+
+class TestAdminRateLimiting:
+    def test_api_stats_rate_limited_after_threshold(self):
+        original_secret = _app.DASHBOARD_SECRET
+        original_limit  = _app.RATE_LIMIT
+        _app.DASHBOARD_SECRET = ''
+        _app.RATE_LIMIT = 3
+        _app._rate_store.clear()
+        try:
+            client = _app.app.test_client()
+            ip = {'REMOTE_ADDR': '8.8.8.8'}
+            for _ in range(3):
+                assert client.get('/api/stats', environ_base=ip).status_code == 200
+            assert client.get('/api/stats', environ_base=ip).status_code == 429
+        finally:
+            _app.DASHBOARD_SECRET = original_secret
+            _app.RATE_LIMIT = original_limit
+            _app._rate_store.clear()
+
+    def test_api_attacks_rate_limited_after_threshold(self):
+        original_secret = _app.DASHBOARD_SECRET
+        original_limit  = _app.RATE_LIMIT
+        _app.DASHBOARD_SECRET = ''
+        _app.RATE_LIMIT = 3
+        _app._rate_store.clear()
+        try:
+            client = _app.app.test_client()
+            ip = {'REMOTE_ADDR': '9.9.9.9'}
+            for _ in range(3):
+                assert client.get('/api/attacks', environ_base=ip).status_code == 200
+            assert client.get('/api/attacks', environ_base=ip).status_code == 429
+        finally:
+            _app.DASHBOARD_SECRET = original_secret
+            _app.RATE_LIMIT = original_limit
+            _app._rate_store.clear()
+
+    def test_export_rate_limited_after_threshold(self):
+        original_secret = _app.DASHBOARD_SECRET
+        original_limit  = _app.RATE_LIMIT
+        _app.DASHBOARD_SECRET = ''
+        _app.RATE_LIMIT = 3
+        _app._rate_store.clear()
+        try:
+            client = _app.app.test_client()
+            ip = {'REMOTE_ADDR': '10.10.10.10'}
+            for _ in range(3):
+                assert client.get('/export', environ_base=ip).status_code == 200
+            assert client.get('/export', environ_base=ip).status_code == 429
+        finally:
+            _app.DASHBOARD_SECRET = original_secret
+            _app.RATE_LIMIT = original_limit
+            _app._rate_store.clear()
+
+
+# ---------------------------------------------------------------------------
+# Fix 8 — LRU eviction on _rate_store
+# ---------------------------------------------------------------------------
+
+class TestRateLRUEviction:
+    def test_eviction_leaves_store_non_empty(self):
+        from time import time as _time
+        _app._rate_store.clear()
+        for i in range(10_001):
+            _app._rate_store[str(i)] = [_time() - 120]
+        # Calling is_rate_limited triggers the eviction path
+        _app.is_rate_limited('eviction-trigger-ip')
+        remaining = len(_app._rate_store)
+        _app._rate_store.clear()
+        assert remaining > 0, "LRU eviction must not clear the entire store"
+
+    def test_eviction_reduces_store_size(self):
+        from time import time as _time
+        _app._rate_store.clear()
+        for i in range(10_001):
+            _app._rate_store[str(i)] = [_time() - 120]
+        size_before = len(_app._rate_store)
+        _app.is_rate_limited('eviction-trigger-ip-2')
+        size_after = len(_app._rate_store)
+        _app._rate_store.clear()
+        assert size_after < size_before
+
+
+# ---------------------------------------------------------------------------
+# Fix 9 — IP validation with TRUST_PROXY=1
+# ---------------------------------------------------------------------------
+
+class TestIPValidation:
+    def _get_ip(self, xff, remote='10.1.2.3'):
+        with _app.app.test_request_context(
+            '/',
+            headers={'X-Forwarded-For': xff},
+            environ_base={'REMOTE_ADDR': remote},
+        ):
+            original = _app.TRUST_PROXY
+            _app.TRUST_PROXY = True
+            try:
+                return _app.get_client_ip()
+            finally:
+                _app.TRUST_PROXY = original
+
+    def test_invalid_ip_falls_back_to_remote_addr(self):
+        assert self._get_ip('not-a-valid-ip; DROP TABLE attacks;') == '10.1.2.3'
+
+    def test_malformed_ip_falls_back(self):
+        assert self._get_ip('999.999.999.999') == '10.1.2.3'
+
+    def test_valid_ipv4_accepted(self):
+        assert self._get_ip('203.0.113.5') == '203.0.113.5'
+
+    def test_valid_ipv6_accepted(self):
+        assert self._get_ip('2001:db8::1') == '2001:db8::1'
+
+    def test_first_ip_in_comma_list_validated(self):
+        # Valid first hop with a trailing proxy IP
+        assert self._get_ip('203.0.113.5, 10.0.0.1') == '203.0.113.5'
+
+    def test_trust_proxy_off_ignores_xff(self):
+        with _app.app.test_request_context(
+            '/',
+            headers={'X-Forwarded-For': '1.2.3.4'},
+            environ_base={'REMOTE_ADDR': '10.1.2.3'},
+        ):
+            original = _app.TRUST_PROXY
+            _app.TRUST_PROXY = False
+            try:
+                ip = _app.get_client_ip()
+            finally:
+                _app.TRUST_PROXY = original
+            assert ip == '10.1.2.3'
+
+
+# ---------------------------------------------------------------------------
+# Fix 10 — Security headers on all responses
+# ---------------------------------------------------------------------------
+
+class TestSecurityHeaders:
+    def _headers(self, path='/', **kwargs):
+        _app._rate_store.clear()
+        return _app.app.test_client().get(path, **kwargs).headers
+
+    def test_x_content_type_options(self):
+        assert self._headers()['X-Content-Type-Options'] == 'nosniff'
+
+    def test_x_frame_options(self):
+        assert self._headers()['X-Frame-Options'] == 'DENY'
+
+    def test_referrer_policy(self):
+        assert self._headers()['Referrer-Policy'] == 'no-referrer'
+
+    def test_csp_present(self):
+        assert 'Content-Security-Policy' in self._headers()
+
+    def test_csp_blocks_external_scripts(self):
+        csp = self._headers()['Content-Security-Policy']
+        assert "default-src 'self'" in csp
+
+    def test_csp_frame_ancestors_none(self):
+        csp = self._headers()['Content-Security-Policy']
+        assert "frame-ancestors 'none'" in csp
+
+    def test_headers_on_json_api(self):
+        original_secret = _app.DASHBOARD_SECRET
+        _app.DASHBOARD_SECRET = ''
+        _app._rate_store.clear()
+        try:
+            h = self._headers('/api/stats')
+            assert h['X-Content-Type-Options'] == 'nosniff'
+        finally:
+            _app.DASHBOARD_SECRET = original_secret
+
+    def test_headers_on_401_response(self):
+        original_secret = _app.DASHBOARD_SECRET
+        _app.DASHBOARD_SECRET = 'required-secret'
+        _app._rate_store.clear()
+        try:
+            h = _app.app.test_client().get('/api/stats').headers
+            assert h['X-Frame-Options'] == 'DENY'
+        finally:
+            _app.DASHBOARD_SECRET = original_secret

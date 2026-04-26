@@ -1,6 +1,8 @@
+import ipaddress
 import os
 import json
 import hashlib
+import threading
 from collections import defaultdict
 from time import time
 
@@ -26,6 +28,9 @@ if not DASHBOARD_SECRET:
         file=sys.stderr,
     )
 
+_rate_lock = threading.Lock()
+_fp_lock   = threading.Lock()
+
 _rate_store: dict = defaultdict(list)
 RATE_LIMIT  = 20   # max requests per IP
 RATE_WINDOW = 60   # seconds
@@ -39,21 +44,31 @@ def get_client_ip() -> str:
     if TRUST_PROXY:
         forwarded = request.headers.get('X-Forwarded-For', '')
         if forwarded:
-            ip = forwarded.split(',')[0].strip()
+            raw = forwarded.split(',')[0].strip()
             # Sanitise: printable ASCII only, max IPv6 length (45 chars)
-            ip = ''.join(c for c in ip if c.isprintable() and c not in '\r\n')[:45]
-            return ip or '0.0.0.0'
+            sanitised = ''.join(c for c in raw if c.isprintable() and c not in '\r\n')[:45]
+            try:
+                ipaddress.ip_address(sanitised)
+                return sanitised
+            except ValueError:
+                pass  # not a valid IP — fall through to remote_addr
     return request.remote_addr or '0.0.0.0'
 
 
 def is_rate_limited(ip: str) -> bool:
     now = time()
-    _rate_store[ip] = [t for t in _rate_store[ip] if now - t < RATE_WINDOW]
-    if len(_rate_store[ip]) >= RATE_LIMIT:
-        return True
-    _rate_store[ip].append(now)
-    if len(_rate_store) > 10000:
-        _rate_store.clear()
+    with _rate_lock:
+        window = [t for t in _rate_store[ip] if now - t < RATE_WINDOW]
+        if len(window) >= RATE_LIMIT:
+            _rate_store[ip] = window
+            return True
+        window.append(now)
+        _rate_store[ip] = window
+        # Partial LRU eviction: drop the oldest 20% of IPs rather than clearing all,
+        # so a 10 001-IP flood can't reset every rate limit simultaneously.
+        if len(_rate_store) > 10_000:
+            for k in list(_rate_store)[:2_000]:
+                del _rate_store[k]
     return False
 
 
@@ -66,17 +81,16 @@ def _prompt_fingerprint(prompt: str) -> str:
 def _check_fingerprint(ip: str, prompt: str) -> dict:
     """Record this (ip, prompt) pair and return replay/scan context."""
     fp = _prompt_fingerprint(prompt)
-    prior = _fingerprint_counts.get(fp, 0)
-    _fingerprint_counts[fp] = prior + 1
-    _ip_payload_counts[ip].add(fp)
-    # Snapshot before any eviction so the return value reflects the state we just wrote
-    ip_unique = len(_ip_payload_counts[ip])
-
-    # Evict when stores grow very large (long-running deployments)
-    if len(_fingerprint_counts) > 50000:
-        _fingerprint_counts.clear()
-        _ip_payload_counts.clear()
-
+    with _fp_lock:
+        prior = _fingerprint_counts.get(fp, 0)
+        _fingerprint_counts[fp] = prior + 1
+        _ip_payload_counts[ip].add(fp)
+        ip_unique = len(_ip_payload_counts[ip])
+        # Evict when stores grow very large (long-running deployments).
+        # Both stores are cleared together to keep them consistent.
+        if len(_fingerprint_counts) > 50_000:
+            _fingerprint_counts.clear()
+            _ip_payload_counts.clear()
     return {
         "payload_hash": fp,
         "prior_occurrences": prior,
@@ -87,16 +101,29 @@ def _check_fingerprint(ip: str, prompt: str) -> dict:
 
 def dashboard_auth_error():
     """Return a 401 Response if DASHBOARD_SECRET is set and the request lacks it.
-    Pass secret via ?secret=VALUE or X-Dashboard-Secret header."""
+    Pass secret via X-Dashboard-Secret request header only — never in the URL."""
     if not DASHBOARD_SECRET:
         return None  # no secret configured — allow (local use)
-    provided = (
-        request.args.get('secret', '')
-        or request.headers.get('X-Dashboard-Secret', '')
-    )
+    provided = request.headers.get('X-Dashboard-Secret', '')
     if provided != DASHBOARD_SECRET:
         return Response('Unauthorized', 401)
     return None
+
+
+@app.after_request
+def add_security_headers(response):
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['Referrer-Policy'] = 'no-referrer'
+    response.headers['Content-Security-Policy'] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'"
+    )
+    return response
 
 
 @app.route('/')
@@ -132,16 +159,19 @@ def dashboard():
     err = dashboard_auth_error()
     if err:
         return err
-    return render_template('dashboard.html')
+    return render_template('dashboard.html', dashboard_secret=DASHBOARD_SECRET)
 
 
 @app.route('/api/attacks')
 def api_attacks():
+    ip = get_client_ip()
+    if is_rate_limited(ip):
+        return jsonify({'error': 'Too many requests'}), 429
     err = dashboard_auth_error()
     if err:
         return err
     try:
-        limit  = min(int(request.args.get('limit', 50)), 500)
+        limit  = max(0, min(int(request.args.get('limit', 50)), 500))
         offset = max(int(request.args.get('offset', 0)), 0)
     except (ValueError, TypeError):
         return jsonify({'error': 'Invalid parameters'}), 400
@@ -150,6 +180,9 @@ def api_attacks():
 
 @app.route('/api/stats')
 def api_stats():
+    ip = get_client_ip()
+    if is_rate_limited(ip):
+        return jsonify({'error': 'Too many requests'}), 429
     err = dashboard_auth_error()
     if err:
         return err
@@ -158,6 +191,9 @@ def api_stats():
 
 @app.route('/export')
 def export():
+    ip = get_client_ip()
+    if is_rate_limited(ip):
+        return jsonify({'error': 'Too many requests'}), 429
     err = dashboard_auth_error()
     if err:
         return err

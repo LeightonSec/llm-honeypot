@@ -330,7 +330,7 @@
   <div class="header-right">
     <span id="last-updated"></span>
     <a href="/" class="btn">&#8592; Honeypot</a>
-    <a href="/export" class="btn btn-primary">&#8595; Export JSON</a>
+    <button type="button" class="btn btn-primary" onclick="exportData()">&#8595; Export JSON</button>
   </div>
 </header>
 
@@ -411,6 +411,9 @@
 </main>
 
 <script>
+  const DASHBOARD_SECRET = {{ dashboard_secret | tojson }};
+  const authHeaders = () => DASHBOARD_SECRET ? { 'X-Dashboard-Secret': DASHBOARD_SECRET } : {};
+
   const TYPE_LABELS = {
     jailbreak:          'Jailbreak',
     prompt_injection:   'Prompt Injection',
@@ -435,7 +438,7 @@
 
   async function fetchStats() {
     try {
-      const stats = await fetch('/api/stats').then(r => r.json());
+      const stats = await fetch('/api/stats', { headers: authHeaders() }).then(r => r.json());
       document.getElementById('s-total').textContent  = stats.total  ?? 0;
       document.getElementById('s-high').textContent   = stats.by_risk?.HIGH   ?? 0;
       document.getElementById('s-medium').textContent = stats.by_risk?.MEDIUM ?? 0;
@@ -453,7 +456,7 @@
 
   async function fetchAttacks() {
     try {
-      const attacks = await fetch('/api/attacks?limit=300').then(r => r.json());
+      const attacks = await fetch('/api/attacks?limit=300', { headers: authHeaders() }).then(r => r.json());
 
       const newIds = firstLoad
         ? new Set()
@@ -516,6 +519,22 @@
           <td class="td-prompt" title="${esc(a.prompt)}">${esc(a.prompt)}</td>
         </tr>`;
     }).join('');
+  }
+
+  async function exportData() {
+    try {
+      const r = await fetch('/export', { headers: authHeaders() });
+      if (!r.ok) { console.warn('Export failed', r.status); return; }
+      const blob = await r.blob();
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href     = url;
+      a.download = 'honeypot_attacks.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch(e) { console.warn('Export error', e); }
   }
 
   fetchStats();
