@@ -425,7 +425,13 @@
 </main>
 
 <script>
-  const DASHBOARD_SECRET = {{ dashboard_secret | tojson }};
+  const DASHBOARD_SECRET = {{ dashboard_secret | tojson }} || new URLSearchParams(window.location.search).get('secret') || '';
+  // Strip ?secret= from the URL immediately so it doesn't persist in browser history.
+  if (new URLSearchParams(window.location.search).has('secret')) {
+    const clean = new URL(window.location.href);
+    clean.searchParams.delete('secret');
+    history.replaceState(null, '', clean.pathname + (clean.search || ''));
+  }
   const authHeaders = () => DASHBOARD_SECRET ? { 'X-Dashboard-Secret': DASHBOARD_SECRET } : {};
 
   function sentimentBadge(score) {

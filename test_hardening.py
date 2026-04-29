@@ -5,7 +5,7 @@ Tests for the hardening fixes applied after ANALYSIS.md and the security audit:
   3.  unknown/HIGH promotion — LLM-detected jailbreaks get the right label
   4.  Session fingerprinting — replayed and scripted payloads are flagged
   5.  Negative limit guard   — limit=-1 on /api/attacks is clamped to 0
-  6.  Header-only auth       — URL query-param secret is no longer accepted
+  6.  Dual auth              — secret accepted via header or ?secret= URL parameter
   7.  Admin rate limiting    — /api/stats, /api/attacks, /export are rate-limited
   8.  LRU eviction           — _rate_store evicts 20% oldest instead of clearing all
   9.  IP validation          — invalid X-Forwarded-For falls back to remote_addr
@@ -328,7 +328,7 @@ class TestNegativeLimitGuard:
 
 
 # ---------------------------------------------------------------------------
-# Fix 6 — Header-only auth (URL query param removed)
+# Fix 6 — Dual auth (header + URL query param)
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -343,18 +343,18 @@ def secret_client():
     _app._rate_store.clear()
 
 
-class TestHeaderOnlyAuth:
-    def test_url_param_secret_rejected(self, secret_client):
+class TestDualAuth:
+    def test_url_param_secret_accepted(self, secret_client):
         r = secret_client.get('/api/stats?secret=test-secret-hardening')
-        assert r.status_code == 401
+        assert r.status_code == 200
 
-    def test_url_param_secret_rejected_on_attacks(self, secret_client):
+    def test_url_param_secret_accepted_on_attacks(self, secret_client):
         r = secret_client.get('/api/attacks?secret=test-secret-hardening')
-        assert r.status_code == 401
+        assert r.status_code == 200
 
-    def test_url_param_secret_rejected_on_export(self, secret_client):
+    def test_url_param_secret_accepted_on_export(self, secret_client):
         r = secret_client.get('/export?secret=test-secret-hardening')
-        assert r.status_code == 401
+        assert r.status_code == 200
 
     def test_header_secret_accepted_on_stats(self, secret_client):
         r = secret_client.get('/api/stats',
@@ -369,6 +369,10 @@ class TestHeaderOnlyAuth:
     def test_wrong_header_value_rejected(self, secret_client):
         r = secret_client.get('/api/stats',
                                headers={'X-Dashboard-Secret': 'wrong-secret'})
+        assert r.status_code == 401
+
+    def test_wrong_url_param_value_rejected(self, secret_client):
+        r = secret_client.get('/api/stats?secret=wrong-secret')
         assert r.status_code == 401
 
 

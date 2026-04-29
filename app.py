@@ -101,10 +101,10 @@ def _check_fingerprint(ip: str, prompt: str) -> dict:
 
 def dashboard_auth_error():
     """Return a 401 Response if DASHBOARD_SECRET is set and the request lacks it.
-    Pass secret via X-Dashboard-Secret request header only — never in the URL."""
+    Pass secret via X-Dashboard-Secret header or ?secret= URL parameter."""
     if not DASHBOARD_SECRET:
         return None  # no secret configured — allow (local use)
-    provided = request.headers.get('X-Dashboard-Secret', '')
+    provided = request.headers.get('X-Dashboard-Secret', '') or request.args.get('secret', '')
     if provided != DASHBOARD_SECRET:
         return Response('Unauthorized', 401)
     return None
