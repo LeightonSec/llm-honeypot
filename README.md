@@ -1,8 +1,21 @@
 # LLM Honeypot
 
+![Version](https://img.shields.io/badge/version-v1.0.0-blue)
+![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+
 A deliberately exposed fake AI assistant that logs and analyses attack attempts in real-time. Presents a convincing chat UI, silently runs detection on every prompt, classifies the attack type, and surfaces everything in a live dashboard.
 
 Built on top of the [ai-firewall](../ai-firewall) detection engine.
+
+---
+
+## Ethical Use
+
+This tool is provided for **authorised security research and educational purposes only**.
+Only deploy it on infrastructure you own or have explicit written permission to operate.
+The honeypot is intentionally open to inbound traffic — never run it on a host that has access to sensitive internal systems.
+The author accepts no liability for misuse.
 
 ---
 
@@ -156,3 +169,29 @@ Downloads the full attack log as `honeypot_attacks.json`.
 - The SQLite database (`honeypot.db`) and `.env` are git-ignored. Never commit either.
 - Rotate your Anthropic API key if you suspect it has been exposed.
 - The in-memory rate limit and fingerprint stores are not thread-safe. Run with a single worker (`python app.py`) rather than a multi-threaded WSGI server unless you add locking.
+
+---
+
+## Scope
+
+Designed to capture and classify unsolicited prompt attacks against a fake public AI endpoint. It does not:
+
+- Actively probe, scan, or interact with external systems
+- Attempt to identify or attribute attackers beyond IP and user-agent
+- Integrate with external threat intelligence platforms
+- Replace a WAF or production-grade API security layer
+
+---
+
+## Limitations
+
+- Rate limit and fingerprint stores are in-memory — reset on restart, not suitable for multi-instance deployments
+- Detection accuracy depends on the ai-firewall being available; falls back to keyword-only if the Claude API is unreachable
+- SQLite is single-file — not designed for high-concurrency write loads
+- No persistent attacker tracking across sessions (session fingerprints cleared at 50k entries)
+
+---
+
+## Licence
+
+MIT © 2026 [LeightonSec](https://github.com/LeightonSec)
