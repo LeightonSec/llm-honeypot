@@ -13,13 +13,7 @@ Tests for the hardening fixes applied after ANALYSIS.md and the security audit:
  11.  Sentiment layer        — emotional-manipulation + framing detection (VADER)
  12.  Sentiment integration  — sentiment feeds risk/type into the final pipeline verdict
 """
-import sys
-import os
-import importlib.util
 import pytest
-
-_HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, _HERE)
 
 from classifier import (
     normalize_for_matching,
@@ -27,22 +21,9 @@ from classifier import (
     _obfuscation_score,
     classify_attack,
     analyse_and_classify,
-    FIREWALL_AVAILABLE,
 )
 from sentiment import analyse_sentiment
-
-# classifier.py inserts ai-firewall/ into sys.path[0], which would shadow
-# this project's app.py.  Load it by explicit file path to avoid the conflict.
-def _load_app():
-    spec = importlib.util.spec_from_file_location(
-        "_honeypot_app",
-        os.path.join(_HERE, "app.py"),
-    )
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-_app = _load_app()
+import app as _app
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +141,6 @@ class TestUnknownHighPromotion:
         import classifier as clf
 
         original_local = clf._local_analyse
-        original_fw    = clf.FIREWALL_AVAILABLE
 
         def mock_high_jailbreak(prompt):
             return {
@@ -172,8 +152,7 @@ class TestUnknownHighPromotion:
                 "api_reason":     "mocked high-confidence jailbreak",
             }
 
-        clf._local_analyse     = mock_high_jailbreak
-        clf.FIREWALL_AVAILABLE = False
+        clf._local_analyse = mock_high_jailbreak
         try:
             # A benign-looking phrase that local regex won't flag
             result = clf.analyse_and_classify("xyzzy obscure-payload-zero-matches")
@@ -182,15 +161,13 @@ class TestUnknownHighPromotion:
             )
             assert result["risk_level"] == "HIGH"
         finally:
-            clf._local_analyse     = original_local
-            clf.FIREWALL_AVAILABLE = original_fw
+            clf._local_analyse = original_local
 
     def test_promotion_on_high_risk_without_jailbreak_verdict(self):
         """risk_level=HIGH alone (even without JAILBREAK verdict) should promote."""
         import classifier as clf
 
         original_local = clf._local_analyse
-        original_fw    = clf.FIREWALL_AVAILABLE
 
         def mock_high_suspicious(prompt):
             return {
@@ -202,14 +179,12 @@ class TestUnknownHighPromotion:
                 "api_reason":     "mocked high risk suspicious",
             }
 
-        clf._local_analyse     = mock_high_suspicious
-        clf.FIREWALL_AVAILABLE = False
+        clf._local_analyse = mock_high_suspicious
         try:
             result = clf.analyse_and_classify("another-phrase-regex-wont-catch")
             assert result["attack_type"] == "jailbreak"
         finally:
-            clf._local_analyse     = original_local
-            clf.FIREWALL_AVAILABLE = original_fw
+            clf._local_analyse = original_local
 
     def test_low_risk_unknown_stays_clean(self):
         result = analyse_and_classify("hello")

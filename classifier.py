@@ -1,4 +1,3 @@
-import sys
 import os
 import re
 import base64
@@ -9,15 +8,6 @@ from dotenv import load_dotenv
 from sentiment import analyse_sentiment
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
-
-AI_FIREWALL_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'ai-firewall'))
-sys.path.insert(0, AI_FIREWALL_PATH)
-
-try:
-    from detector import analyse_prompt as _firewall_analyse
-    FIREWALL_AVAILABLE = True
-except ImportError:
-    FIREWALL_AVAILABLE = False
 
 
 # Unicode confusables: maps lookalike chars to their ASCII equivalents.
@@ -287,14 +277,8 @@ def analyse_and_classify(prompt: str) -> dict:
     # Layer 1 — Emotional manipulation and framing detection
     sentiment = analyse_sentiment(prompt)
 
-    # Layer 2 — Keyword scanner / LLM firewall
-    if FIREWALL_AVAILABLE:
-        try:
-            fw = _firewall_analyse(prompt)
-        except Exception:
-            fw = _local_analyse(prompt)
-    else:
-        fw = _local_analyse(prompt)
+    # Layer 2 — Keyword scanner (local analysis; no external firewall dependency)
+    fw = _local_analyse(prompt)
 
     # Layer 3 — Pattern-based attack-type classification
     b64_payloads = _extract_b64_payloads(prompt)
