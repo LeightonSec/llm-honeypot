@@ -3,6 +3,10 @@ import json
 import os
 from datetime import datetime
 
+from pydantic import ValidationError
+
+from schemas import AnalysisRecord
+
 DB_PATH = os.path.join(os.path.dirname(__file__), 'honeypot.db')
 
 
@@ -42,6 +46,11 @@ def init_db():
 
 
 def log_attack(ip: str, user_agent: str, prompt: str, analysis: dict) -> int:
+    try:
+        record = AnalysisRecord(**analysis)
+    except ValidationError:
+        record = AnalysisRecord()
+
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.execute(
             '''INSERT INTO attacks
@@ -54,17 +63,17 @@ def log_attack(ip: str, user_agent: str, prompt: str, analysis: dict) -> int:
                 ip,
                 user_agent,
                 prompt,
-                analysis.get("fake_response", ""),
-                analysis.get("attack_type", "unknown"),
-                analysis.get("risk_level", "LOW"),
-                analysis.get("keyword_score", 0),
-                json.dumps(analysis.get("keyword_matches", {})),
-                analysis.get("api_verdict", "UNKNOWN"),
-                analysis.get("api_confidence", "UNKNOWN"),
-                analysis.get("api_reason", ""),
-                json.dumps(analysis.get("flags", {})),
-                analysis.get("sentiment_score", 0.0),
-                analysis.get("framing_type", "none"),
+                record.fake_response,
+                record.attack_type,
+                record.risk_level,
+                record.keyword_score,
+                json.dumps(record.keyword_matches),
+                record.api_verdict,
+                record.api_confidence,
+                record.api_reason,
+                json.dumps(record.flags),
+                record.sentiment_score,
+                record.framing_type,
             )
         )
         conn.commit()
@@ -84,7 +93,8 @@ def get_attacks(limit: int = 100, offset: int = 0) -> list:
         d = dict(row)
         for field in ('keyword_matches', 'flags'):
             try:
-                d[field] = json.loads(d.get(field) or '{}')
+                parsed = json.loads(d.get(field) or '{}')
+                d[field] = parsed if isinstance(parsed, dict) else {}
             except (json.JSONDecodeError, TypeError):
                 d[field] = {}
         result.append(d)
@@ -135,7 +145,8 @@ def export_all() -> list:
         d = dict(row)
         for field in ('keyword_matches', 'flags'):
             try:
-                d[field] = json.loads(d.get(field) or '{}')
+                parsed = json.loads(d.get(field) or '{}')
+                d[field] = parsed if isinstance(parsed, dict) else {}
             except (json.JSONDecodeError, TypeError):
                 d[field] = {}
         result.append(d)

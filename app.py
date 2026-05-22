@@ -7,9 +7,11 @@ from collections import defaultdict
 from time import time
 
 from flask import Flask, request, jsonify, render_template, Response
+from pydantic import ValidationError
 
 from classifier import analyse_and_classify
 from db import init_db, log_attack, get_attacks, get_stats, export_all
+from schemas import AttackFilter, ChatRequest
 
 DASHBOARD_SECRET = os.environ.get('DASHBOARD_SECRET', '')
 # TRUST_PROXY must be set explicitly; without it X-Forwarded-For is ignored so
@@ -137,13 +139,14 @@ def chat():
     if is_rate_limited(ip):
         return jsonify({'error': 'Too many requests'}), 429
 
-    data = request.get_json(silent=True) or {}
-    prompt = (data.get('prompt') or '').strip()
-
+    raw = request.get_json(silent=True) or {}
+    try:
+        body = ChatRequest(**raw)
+    except ValidationError:
+        return jsonify({'error': 'No prompt provided'}), 400
+    prompt = body.prompt.strip()
     if not prompt:
         return jsonify({'error': 'No prompt provided'}), 400
-    if len(prompt) > 4000:
-        return jsonify({'error': 'Message too long'}), 400
 
     user_agent = request.headers.get('User-Agent', '')[:512]
 
@@ -171,11 +174,13 @@ def api_attacks():
     if err:
         return err
     try:
-        limit  = max(0, min(int(request.args.get('limit', 50)), 500))
-        offset = max(int(request.args.get('offset', 0)), 0)
-    except (ValueError, TypeError):
+        filters = AttackFilter(
+            limit=request.args.get('limit', 50),
+            offset=request.args.get('offset', 0),
+        )
+    except ValidationError:
         return jsonify({'error': 'Invalid parameters'}), 400
-    return jsonify(get_attacks(limit, offset))
+    return jsonify(get_attacks(filters.limit, filters.offset))
 
 
 @app.route('/api/stats')
