@@ -845,3 +845,93 @@ class TestTwoSignalRiskBump:
         )
         # Keyword layer classifies this — attack_type should NOT be social_engineering
         assert result["attack_type"] != "social_engineering"
+
+
+# ---------------------------------------------------------------------------
+# Retention purge
+# ---------------------------------------------------------------------------
+
+import sqlite3 as _sqlite3
+from datetime import datetime, timedelta
+import db as _db
+
+
+@pytest.fixture()
+def tmp_db(tmp_path, monkeypatch):
+    db_file = tmp_path / "honeypot_test.db"
+    monkeypatch.setattr(_db, "DB_PATH", str(db_file))
+
+    with _sqlite3.connect(str(db_file)) as conn:
+        conn.execute('''
+            CREATE TABLE attacks (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp       TEXT NOT NULL,
+                ip_address      TEXT,
+                user_agent      TEXT,
+                prompt          TEXT NOT NULL,
+                response        TEXT,
+                attack_type     TEXT,
+                risk_level      TEXT,
+                keyword_score   INTEGER DEFAULT 0,
+                keyword_matches TEXT DEFAULT '{}',
+                api_verdict     TEXT,
+                api_confidence  TEXT,
+                api_reason      TEXT,
+                flags           TEXT DEFAULT '{}',
+                sentiment_score REAL DEFAULT 0.0,
+                framing_type    TEXT DEFAULT 'none'
+            )
+        ''')
+        old_ts = (datetime.utcnow() - timedelta(days=100)).isoformat()
+        recent_ts = datetime.utcnow().isoformat()
+        conn.executemany(
+            "INSERT INTO attacks (timestamp, prompt) VALUES (?, ?)",
+            [
+                (old_ts, "old attack 1"),
+                (old_ts, "old attack 2"),
+                (recent_ts, "recent attack 1"),
+            ],
+        )
+        conn.commit()
+
+    yield db_file
+
+
+class TestRetentionPurge:
+    def test_purge_deletes_old_rows(self, tmp_db):
+        _db.purge_old_attacks()
+        with _sqlite3.connect(str(tmp_db)) as conn:
+            remaining = conn.execute("SELECT COUNT(*) FROM attacks").fetchone()[0]
+        assert remaining == 1
+
+    def test_purge_preserves_recent_rows(self, tmp_db):
+        _db.purge_old_attacks()
+        with _sqlite3.connect(str(tmp_db)) as conn:
+            prompt = conn.execute("SELECT prompt FROM attacks").fetchone()[0]
+        assert prompt == "recent attack 1"
+
+    def test_purge_returns_deleted_count(self, tmp_db):
+        deleted = _db.purge_old_attacks()
+        assert deleted == 2
+
+    def test_purge_zero_when_nothing_old(self, tmp_db):
+        _db.purge_old_attacks()
+        deleted_again = _db.purge_old_attacks()
+        assert deleted_again == 0
+
+    def test_get_retention_stats_total(self, tmp_db):
+        stats = _db.get_retention_stats()
+        assert stats["total"] == 3
+
+    def test_get_retention_stats_eligible(self, tmp_db):
+        stats = _db.get_retention_stats()
+        assert stats["eligible_for_purge"] == 2
+
+    def test_get_retention_stats_empty_db(self, tmp_db):
+        with _sqlite3.connect(str(tmp_db)) as conn:
+            conn.execute("DELETE FROM attacks")
+            conn.commit()
+        stats = _db.get_retention_stats()
+        assert stats["total"] == 0
+        assert stats["oldest_timestamp"] is None
+        assert stats["eligible_for_purge"] == 0

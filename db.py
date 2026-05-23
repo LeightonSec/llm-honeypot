@@ -135,6 +135,27 @@ def get_stats() -> dict:
     }
 
 
+def purge_old_attacks(days: int = 90) -> int:
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.execute(
+            "DELETE FROM attacks WHERE timestamp < datetime('now', ?)",
+            (f"-{days} days",),
+        )
+        conn.commit()
+        return cursor.rowcount
+
+
+def get_retention_stats() -> dict:
+    with sqlite3.connect(DB_PATH) as conn:
+        total, oldest = conn.execute(
+            "SELECT COUNT(*), MIN(timestamp) FROM attacks"
+        ).fetchone()
+        eligible = conn.execute(
+            "SELECT COUNT(*) FROM attacks WHERE timestamp < datetime('now', '-90 days')"
+        ).fetchone()[0]
+    return {"total": total, "oldest_timestamp": oldest, "eligible_for_purge": eligible}
+
+
 def export_all() -> list:
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
