@@ -14,6 +14,7 @@ from db import init_db, log_attack, get_attacks, get_stats, export_all
 from schemas import AttackFilter, ChatRequest
 
 DASHBOARD_SECRET = os.environ.get('DASHBOARD_SECRET', '')
+DAST_MODE = os.environ.get('DAST_MODE', '').lower() == 'true'
 # TRUST_PROXY must be set explicitly; without it X-Forwarded-For is ignored so
 # attackers can't spoof their IP to bypass rate limiting or fingerprinting.
 TRUST_PROXY = os.environ.get('TRUST_PROXY', '0') == '1'
@@ -27,6 +28,14 @@ if not DASHBOARD_SECRET:
         "WARNING: DASHBOARD_SECRET is not set. "
         "Dashboard, API, and export endpoints are publicly accessible. "
         "Set DASHBOARD_SECRET in your environment before any public deployment.",
+        file=sys.stderr,
+    )
+
+if DAST_MODE:
+    import sys
+    print(
+        "WARNING: DAST_MODE is active — /chat responses include classification metadata. "
+        "Disable before any public deployment.",
         file=sys.stderr,
     )
 
@@ -154,6 +163,13 @@ def chat():
     analysis["flags"] = _check_fingerprint(ip, prompt)
     log_attack(ip, user_agent, prompt, analysis)
 
+    if DAST_MODE:
+        return jsonify({
+            'response': analysis['fake_response'],
+            'classification': analysis['attack_type'],
+            'risk_level': analysis['risk_level'],
+            'api_verdict': analysis.get('api_verdict', ''),
+        })
     return jsonify({'response': analysis['fake_response']})
 
 
