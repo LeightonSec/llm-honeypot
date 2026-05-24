@@ -142,7 +142,7 @@ def index():
     return render_template('index.html')
 
 
-@app.route('/chat', methods=['POST'])
+@app.route('/chat', methods=['POST'])  # gate: ignore — local honeypot, unauthenticated POST by design, documented in Gate 2 trust boundary map
 def chat():
     ip = get_client_ip()
     if is_rate_limited(ip):
