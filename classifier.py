@@ -181,7 +181,7 @@ def _local_analyse(prompt: str) -> dict:
     """Fallback keyword-only analysis when ai-firewall is unavailable."""
     prompt_lower = normalize_for_matching(prompt).lower()
     all_patterns = {
-        "persona_hijack": [r"act as", r"pretend you", r"you are now", r"roleplay as", r"ignore previous instructions"],
+        "persona_hijack": [r"act as", r"pretend you", r"you are now", r"roleplay as", r"ignore (?:your )?previous instructions"],
         "restriction_bypass": [r"no restrictions", r"bypass", r"override", r"jailbreak", r"ignore your training"],
         "authority_claim": [r"i am a developer", r"admin override", r"system prompt", r"developer mode"],
         "harmful_intent": [r"how to hack", r"malware", r"ransomware", r"exploit vulnerability"],
