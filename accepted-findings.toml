@@ -9,3 +9,11 @@ match     = "4562cfee"
 rationale = "ANTHROPIC_API_KEY=sk-ant-your-key-here in .env.example — example placeholder, not a real credential. Commit predates gate tooling."
 reviewer  = "leighton"
 date      = "2026-05-30"
+
+[[accepted]]
+scanner   = "git_history"
+file      = "git history"
+match     = "4580565d"
+rationale = "ANTHROPIC_API_KEY=sk-ant-your-key-here in .env.example edit — same example placeholder as 4562cfee, touched during gate tooling setup."
+reviewer  = "leighton"
+date      = "2026-05-30"
