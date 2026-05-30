@@ -1,0 +1,11 @@
+# Accepted false positives for llm-honeypot.
+# Each entry removes a finding from gate consideration — severity remains visible in the report.
+# Required fields: scanner, file, match (substring), rationale, reviewer, date.
+
+[[accepted]]
+scanner   = "git_history"
+file      = "git history"
+match     = "4562cfee"
+rationale = "ANTHROPIC_API_KEY=sk-ant-your-key-here in .env.example — example placeholder, not a real credential. Commit predates gate tooling."
+reviewer  = "leighton"
+date      = "2026-05-30"
