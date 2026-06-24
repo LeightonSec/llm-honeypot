@@ -1,16 +1,17 @@
-import ipaddress
-import os
-import json
 import hashlib
+import hmac
+import ipaddress
+import json
+import os
 import threading
 from collections import defaultdict
 from time import time
 
-from flask import Flask, request, jsonify, render_template, Response
+from flask import Flask, Response, jsonify, render_template, request
 from pydantic import ValidationError
 
 from classifier import analyse_and_classify
-from db import init_db, log_attack, get_attacks, get_stats, export_all
+from db import export_all, get_attacks, get_stats, init_db, log_attack
 from schemas import AttackFilter, ChatRequest
 
 DASHBOARD_SECRET = os.environ.get('DASHBOARD_SECRET', '')
@@ -115,8 +116,9 @@ def dashboard_auth_error():
     Pass secret via X-Dashboard-Secret header or ?secret= URL parameter."""
     if not DASHBOARD_SECRET:
         return None  # no secret configured — allow (local use)
-    provided = request.headers.get('X-Dashboard-Secret', '') or request.args.get('secret', '')
-    if provided != DASHBOARD_SECRET:
+    # Raw secret token compared in constant time below; not schema-validatable input.
+    provided = request.headers.get('X-Dashboard-Secret', '') or request.args.get('secret', '')  # gate: ignore — secret token equality check, not a data sink
+    if not hmac.compare_digest(provided, DASHBOARD_SECRET):
         return Response('Unauthorized', 401)
     return None
 
@@ -148,7 +150,7 @@ def chat():
     if is_rate_limited(ip):
         return jsonify({'error': 'Too many requests'}), 429
 
-    raw = request.get_json(silent=True) or {}
+    raw = request.get_json(silent=True) or {}  # gate: ignore — validated immediately via ChatRequest pydantic model below
     try:
         body = ChatRequest(**raw)
     except ValidationError:
@@ -191,8 +193,8 @@ def api_attacks():
         return err
     try:
         filters = AttackFilter(
-            limit=request.args.get('limit', 50),
-            offset=request.args.get('offset', 0),
+            limit=request.args.get('limit', 50),    # gate: ignore — validated by AttackFilter pydantic model (bounds + type coercion)
+            offset=request.args.get('offset', 0),    # gate: ignore — validated by AttackFilter pydantic model (bounds + type coercion)
         )
     except ValidationError:
         return jsonify({'error': 'Invalid parameters'}), 400

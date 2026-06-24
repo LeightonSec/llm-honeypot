@@ -15,16 +15,15 @@ Tests for the hardening fixes applied after ANALYSIS.md and the security audit:
 """
 import pytest
 
+import app as _app
 from classifier import (
-    normalize_for_matching,
     _extract_b64_payloads,
     _obfuscation_score,
-    classify_attack,
     analyse_and_classify,
+    classify_attack,
+    normalize_for_matching,
 )
 from sentiment import analyse_sentiment
-import app as _app
-
 
 # ---------------------------------------------------------------------------
 # Fix 1 — Unicode normalization
@@ -852,7 +851,8 @@ class TestTwoSignalRiskBump:
 # ---------------------------------------------------------------------------
 
 import sqlite3 as _sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
 import db as _db
 
 
@@ -882,8 +882,8 @@ def tmp_db(tmp_path, monkeypatch):
                 framing_type    TEXT DEFAULT 'none'
             )
         ''')
-        old_ts = (datetime.utcnow() - timedelta(days=100)).isoformat()
-        recent_ts = datetime.utcnow().isoformat()
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=100)).isoformat()
+        recent_ts = datetime.now(timezone.utc).isoformat()
         conn.executemany(
             "INSERT INTO attacks (timestamp, prompt) VALUES (?, ?)",
             [

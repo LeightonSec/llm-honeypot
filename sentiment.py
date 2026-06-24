@@ -8,6 +8,7 @@ Catches social-engineering attacks that rely on emotional framing
 (e.g. the grandmother exploit) before the keyword and LLM layers run.
 """
 import re
+
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 _analyzer = SentimentIntensityAnalyzer()

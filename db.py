@@ -1,7 +1,7 @@
-import sqlite3
 import json
 import os
-from datetime import datetime
+import sqlite3
+from datetime import datetime, timezone
 
 from pydantic import ValidationError
 
@@ -59,7 +59,7 @@ def log_attack(ip: str, user_agent: str, prompt: str, analysis: dict) -> int:
                 api_reason, flags, sentiment_score, framing_type)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
             (
-                datetime.utcnow().isoformat(),
+                datetime.now(timezone.utc).isoformat(),
                 ip,
                 user_agent,
                 prompt,
@@ -93,7 +93,7 @@ def get_attacks(limit: int = 100, offset: int = 0) -> list:
         d = dict(row)
         for field in ('keyword_matches', 'flags'):
             try:
-                parsed = json.loads(d.get(field) or '{}')
+                parsed = json.loads(d.get(field) or '{}')  # gate: ignore — parses this app's own json.dumps output from a trusted DB column, guarded by try/except + isinstance
                 d[field] = parsed if isinstance(parsed, dict) else {}
             except (json.JSONDecodeError, TypeError):
                 d[field] = {}
@@ -166,7 +166,7 @@ def export_all() -> list:
         d = dict(row)
         for field in ('keyword_matches', 'flags'):
             try:
-                parsed = json.loads(d.get(field) or '{}')
+                parsed = json.loads(d.get(field) or '{}')  # gate: ignore — parses this app's own json.dumps output from a trusted DB column, guarded by try/except + isinstance
                 d[field] = parsed if isinstance(parsed, dict) else {}
             except (json.JSONDecodeError, TypeError):
                 d[field] = {}

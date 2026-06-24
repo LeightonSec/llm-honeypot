@@ -1,8 +1,9 @@
-import os
-import re
 import base64
-import unicodedata
+import os
 import random
+import re
+import unicodedata
+
 from dotenv import load_dotenv
 
 from sentiment import analyse_sentiment
