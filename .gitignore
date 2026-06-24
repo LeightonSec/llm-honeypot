@@ -7,3 +7,5 @@ venv/
 *.egg-info/
 dist/
 .DS_Store
+.pytest_cache/
+security-gate-report.json

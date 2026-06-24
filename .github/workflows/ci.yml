@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: pytest -q
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install ruff
+        run: pip install ruff>=0.4.0
+
+      - name: Run ruff
+        run: ruff check .
+
+  security:
+    name: Dependency Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # pip-audit runs as an isolated tool, never a project dependency: an audit
+      # tool must not pollute the graph it audits. Both lockfiles are in scope
+      # because dev-only CVEs are still CVEs. --strict fails on any advisory that
+      # cannot be resolved.
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Audit dependencies
+        run: pip-audit -r requirements.txt -r requirements-dev.txt --strict
+
+      # security-gate is pinned to a known-good commit, not a tag or @main.
+      # The v0.1.0 tag predates the gate's hardening (it shipped a vulnerable
+      # msgpack), so pin the hardened HEAD instead.
+      - name: Install security-gate (pinned)
+        run: pip install "git+https://github.com/LeightonSec/security-gate.git@531d618231269b490fd2800484aee7e0feebca38"
+
+      - name: Run security-gate
+        # Real teeth: blocks on CRITICAL/HIGH. The SQLite DB is excluded as a
+        # runtime artifact; the root test module is scanned and passes the gate.
+        run: security-gate scan . --exclude '*.db' --output json --save
+
+      - name: Upload gate report
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: security-gate-report
+          path: security-gate-report.json
