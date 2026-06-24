@@ -1,4 +1,6 @@
 # Dev/test dependencies for llm-honeypot.
 # Compile with: uv pip compile --universal --python-version 3.10 --generate-hashes requirements-dev.in -o requirements-dev.txt
--r requirements.in
+# Layered on the compiled runtime lockfile (not requirements.in) so shared
+# transitive pins stay identical to requirements.txt and the two install together.
+-r requirements.txt
 pytest
