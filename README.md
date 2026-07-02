@@ -6,7 +6,7 @@
 
 A deliberately exposed fake AI assistant that logs and analyses attack attempts in real-time. Presents a convincing chat UI, silently runs detection on every prompt, classifies the attack type, and surfaces everything in a live dashboard.
 
-Built on top of the [ai-firewall](../ai-firewall) detection engine.
+Detection patterns are derived from the [ai-firewall](https://github.com/LeightonSec/ai-firewall) project. Direct library integration — including its Claude-API semantic layer — is a decided next phase (Phase B) and is **not yet built**: the current pipeline is fully local.
 
 ---
 
@@ -22,7 +22,7 @@ The author accepts no liability for misuse.
 ## How it works
 
 1. Visitors land on a fake AI assistant ("Aria by NexusAI Labs")
-2. Every prompt is passed through the ai-firewall's two-layer detector (keyword scan + Claude API)
+2. Every prompt runs through a local multi-signal detector — sentiment/framing analysis, keyword and weighted-pattern classification, unicode-confusable normalisation, base64 payload extraction. No LLM calls; fully offline
 3. A second classifier maps the attempt to one of five attack types
 4. A convincing but deflecting response is returned — the attacker sees nothing unusual
 5. All attempts are logged to SQLite with full metadata
@@ -112,13 +112,11 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Edit `.env` and add your Anthropic API key:
-
-```
-ANTHROPIC_API_KEY=sk-ant-...
-```
-
-> The key is used by the ai-firewall detector for semantic analysis. If `../ai-firewall` is unavailable, the honeypot falls back to local keyword-only detection automatically.
+Set `DASHBOARD_SECRET` (see Security configuration above). No API key is
+needed: detection is fully local. (Phase B — the ai-firewall library
+integration — will introduce `ANTHROPIC_API_KEY` when it lands; do not
+configure one before there is code that uses it, least of all on a host
+whose purpose is attracting attackers.)
 
 ### 5. Run
 
@@ -167,7 +165,6 @@ Downloads the full attack log as `honeypot_attacks.json`.
 - **Set `TRUST_PROXY=1`** only if a trusted reverse proxy is in front. Trusting `X-Forwarded-For` on a directly-exposed socket lets attackers spoof IPs and bypass rate limiting.
 - The honeypot itself is intentionally open — that's the point. Do not run it on infrastructure that has access to sensitive internal systems.
 - The SQLite database (`honeypot.db`) and `.env` are git-ignored. Never commit either.
-- Rotate your Anthropic API key if you suspect it has been exposed.
 - The in-memory rate limit and fingerprint stores are not thread-safe. Run with a single worker (`python app.py`) rather than a multi-threaded WSGI server unless you add locking.
 
 ---
@@ -186,7 +183,7 @@ Designed to capture and classify unsolicited prompt attacks against a fake publi
 ## Limitations
 
 - Rate limit and fingerprint stores are in-memory — reset on restart, not suitable for multi-instance deployments
-- Detection accuracy depends on the ai-firewall being available; falls back to keyword-only if the Claude API is unreachable
+- Detection is local-only (pattern + sentiment); there is no semantic/LLM layer until Phase B ships — novel attacks with no lexical signature will be under-classified
 - SQLite is single-file — not designed for high-concurrency write loads
 - No persistent attacker tracking across sessions (session fingerprints cleared at 50k entries)
 

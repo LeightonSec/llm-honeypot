@@ -1,15 +1,16 @@
 # CLAUDE.md — LLM Honeypot
 
 A deliberately exposed fake AI assistant ("Aria by NexusAI Labs") that silently logs and
-classifies attack attempts in real-time. Built on the ai-firewall detection engine with
-three additional detection layers on top.
+classifies attack attempts in real-time. Three-layer LOCAL detection pipeline; patterns
+derived from the ai-firewall project. NO ai-firewall import and NO LLM calls exist in
+this codebase — that integration is Phase B (decided 2026-06-24, not yet built).
 
 ---
 
 ## SOC Toolkit Position
 
 - **Layer:** Research (Layer 5)
-- **Depends on:** ai-firewall (imported via relative path — must be present at ../ai-firewall)
+- **Depends on:** nothing external at runtime (Flask, pydantic, vaderSentiment, python-dotenv only). Phase B will add ai-firewall as a library dependency
 - **Feeds into:** Incident Tracker (future), Unified Dashboard (future)
 - **Gap it fills:** Live attack capture and classification against a realistic AI target
 
@@ -35,18 +36,19 @@ three additional detection layers on top.
 - Exception: grandmother framing bumps unconditionally — known high-confidence vector
 - Prevents false positives on genuinely distressed users — do not change this logic
 
-### Layer 2 — Keyword / LLM Firewall (classifier.py → ai-firewall)
-- Imports `analyse_prompt` from ai-firewall detector
-- Falls back to local keyword-only analysis if ai-firewall unavailable
-- Graceful degradation — honeypot keeps running without firewall
+### Layer 2 — Keyword scanner (classifier.py, local-only)
+- `_local_analyse()` runs unconditionally: weighted keyword/pattern scoring
+- There is NO ai-firewall import — legacy comments/docstrings that call this a
+  "fallback" or reference an "LLM verdict" predate Phase A and describe the
+  planned Phase B shape, not current behaviour (clean up in Phase B)
 
 ### Layer 3 — Pattern Classifier (classifier.py)
 - NFKC normalisation + Cyrillic/Greek confusable map before matching
 - Base64 payload extraction — decodes hidden instructions in encoded blobs
 - Obfuscation scoring — detects character-level homoglyph evasion
 - Five attack type classification with weighted pattern scoring
-- LLM promotion: if regex says unknown but LLM says HIGH, trust the LLM
-- Sentiment risk bump applied after keyword/LLM layers
+- Promotion: if pattern classifier says unknown but Layer 2 scored HIGH/JAILBREAK, promote to jailbreak (comments call this "LLM promotion" — legacy naming, the verdict is local)
+- Sentiment risk bump applied after the keyword layer
 
 ---
 
@@ -72,14 +74,14 @@ three additional detection layers on top.
 ✅ Base64 payload extraction — catches encoded instruction injection
 ✅ Obfuscation scoring
 ✅ Five attack type classification
-✅ LLM promotion logic
+✅ Layer-2 verdict promotion logic (local)
 ✅ Session fingerprinting — SHA-256 prompt hashing, replay detection
 ✅ Partial LRU eviction — handles 10k+ IP floods safely
 ✅ Security headers — CSP, X-Frame-Options, nosniff, Referrer-Policy
 ✅ Dashboard secret protection via header or URL param
 ✅ Rate limiting — 20 requests per IP per 60 seconds
 ✅ TRUST_PROXY support for reverse proxy deployments
-✅ Graceful fallback if ai-firewall unavailable
+✅ Fully local pipeline — zero external service dependencies (ai-firewall/LLM layer = Phase B)
 ✅ Crescendo attack analysis in ANALYSIS.md
 
 ---
@@ -117,15 +119,15 @@ three additional detection layers on top.
 
 - Python, Flask
 - vaderSentiment
-- Anthropic Claude API (claude-haiku-4-5-20251001) via ai-firewall
 - SQLite
 - python-dotenv
+- (Phase B, not yet built: Anthropic Claude API via the ai-firewall library)
 
 ---
 
 ## Security Rules
 
-- `ANTHROPIC_API_KEY` and `DASHBOARD_SECRET` in `.env` — never committed
+- `DASHBOARD_SECRET` in `.env` — never committed. NO API key: nothing consumes one until Phase B; never configure a credential on the honeypot host that no code uses
 - `.env`, `venv/`, `honeypot.db` gitignored
 - Never expose dashboard without DASHBOARD_SECRET set
 - Never run with FLASK_DEBUG=1 on internet-facing host
@@ -146,4 +148,3 @@ three additional detection layers on top.
 - Schema migrations handled inline in init_db() — add new columns there, never recreate the table
 - Severity always strings: "HIGH", "MEDIUM", "LOW"
 - Port: 5001, host: 0.0.0.0 (intentional — honeypot must be reachable)
-- ai-firewall must be at ../ai-firewall relative to this repo
