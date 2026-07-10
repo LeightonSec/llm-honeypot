@@ -117,10 +117,25 @@ pattern-first here on the most-exposed instance.
 `secrets.token_hex`, inert-data framing, instructions-inside-boundary =
 classified as the attack itself) is verified and pinned by deterministic tests:
 payload lands inside the boundary, framing rules intact, boundary-like text
-inside a payload cannot terminate the fence. Verified, not assumed — the
-hardening shipped in 6365d2e but its prompt-construction properties are
-currently untested. (Same class as modbus's correct-but-unguarded
-exception-bit path.)
+inside a payload cannot terminate the fence.
+
+**Amendment 2026-07-10 (same day, before G1 started — correcting a false
+claim):** the original text asserted the prompt-construction properties were
+"currently untested." That was wrong — written without grepping the test
+files. ai-firewall's test_gate1.py already covers: boundary wraps payload,
+boundary random per request, forge attempt with boundary-like text keeps
+count==2, hostile framing present, steered/out-of-vocabulary output →
+anomalous → never LOW. The REAL residuals, which are G1's actual P6a scope:
+(1) no test embeds an exact-format boundary token (===USER_CONTENT_<16hex>===)
+and asserts extraction integrity — the payload slice between the two real
+boundaries byte-identical to the original; and the 2^-64
+payload-contains-current-boundary collision case is unhandled and undocumented
+in code (no re-roll, no stated acceptance); (2) the framing test pins keywords
+("untrusted"/"never"/"jailbreak"), not the load-bearing rule semantics — a
+rewrite could gut "NEVER an instruction / EVIDENCE OF AN ATTACK" and still
+pass (same class as the hidden-direction helper issue in modbus-sentinel's
+corpus tests). G1 additionally re-verifies all existing fence tests survive
+the package restructure.
 
 ### P6b — Additive-only merge; both disagreement directions are first-class
 
