@@ -440,18 +440,19 @@ class TestRateLRUEviction:
 # ---------------------------------------------------------------------------
 
 class TestIPValidation:
-    def _get_ip(self, xff, remote='10.1.2.3'):
+    def _get_ip(self, xff, remote='10.1.2.3', hops=1):
         with _app.app.test_request_context(
             '/',
             headers={'X-Forwarded-For': xff},
             environ_base={'REMOTE_ADDR': remote},
         ):
-            original = _app.TRUST_PROXY
+            orig_trust, orig_hops = _app.TRUST_PROXY, _app.TRUST_PROXY_HOPS
             _app.TRUST_PROXY = True
+            _app.TRUST_PROXY_HOPS = hops
             try:
                 return _app.get_client_ip()
             finally:
-                _app.TRUST_PROXY = original
+                _app.TRUST_PROXY, _app.TRUST_PROXY_HOPS = orig_trust, orig_hops
 
     def test_invalid_ip_falls_back_to_remote_addr(self):
         assert self._get_ip('not-a-valid-ip; DROP TABLE attacks;') == '10.1.2.3'
@@ -465,9 +466,82 @@ class TestIPValidation:
     def test_valid_ipv6_accepted(self):
         assert self._get_ip('2001:db8::1') == '2001:db8::1'
 
-    def test_first_ip_in_comma_list_validated(self):
-        # Valid first hop with a trailing proxy IP
-        assert self._get_ip('203.0.113.5, 10.0.0.1') == '203.0.113.5'
+    def test_appending_proxy_trusts_rightmost_not_client_leftmost(self):
+        # RENAMED + REWRITTEN. Was test_first_ip_in_comma_list_validated, which
+        # asserted `'203.0.113.5, 10.0.0.1' -> '203.0.113.5'` — the LEFTMOST.
+        # That test encoded the same wrong mental model as the bug it "passed":
+        # appending proxies (nginx $proxy_add_x_forwarded_for, Cloudflare) put
+        # the client the proxy actually saw on the RIGHT, so the leftmost entry
+        # is attacker-controlled. Code and test were both wrong the same way, so
+        # green looked like proof.
+        # XFF = "<client-sent spoof>, <real client our single proxy appended>".
+        assert self._get_ip('1.2.3.4, 203.0.113.5', hops=1) == '203.0.113.5'
+
+    def test_spoofed_leftmost_entries_are_ignored(self):
+        # Attacker pads XFF with fakes; our one proxy appends the real IP last.
+        # No amount of leftward padding can push past what the trusted proxy
+        # itself observed.
+        assert self._get_ip('6.6.6.6, 7.7.7.7, 203.0.113.5', hops=1) == '203.0.113.5'
+
+    def test_multi_hop_takes_nth_from_right(self):
+        # Two trusted proxies: XFF = "spoof, realclient, inner_proxy". The real
+        # client is 2 from the right; the inner proxy's own entry is rightmost.
+        assert self._get_ip('9.9.9.9, 203.0.113.5, 10.0.0.2', hops=2) == '203.0.113.5'
+
+    def test_fewer_entries_than_hops_fails_closed(self):
+        # Header shorter than configured topology (1 entry, 2 hops). Must NOT
+        # fall back to the attacker-controlled leftmost entry — falls through to
+        # remote_addr. This is the failure mode that would silently reintroduce
+        # the original bug.
+        assert self._get_ip('1.2.3.4', remote='10.1.2.3', hops=2) == '10.1.2.3'
+
+    def test_garbage_rightmost_entry_falls_back(self):
+        # The selected (rightmost) entry is malformed → fall back, don't crash.
+        assert self._get_ip('203.0.113.5, not-an-ip', remote='10.1.2.3', hops=1) == '10.1.2.3'
+
+    def test_trailing_comma_whitespace_does_not_shift_position(self):
+        # Empty entries from a trailing comma / stray spaces are dropped before
+        # counting, so position math is unaffected.
+        assert self._get_ip('1.2.3.4,  203.0.113.5 , ', hops=1) == '203.0.113.5'
+
+    def test_high_hops_emits_startup_warning(self):
+        # The warning branch is conditional on TRUST_PROXY_HOPS > 8, which no
+        # default test config hits — so exercise it by executing the real import
+        # path in a subprocess with the env set. (An import-only check would have
+        # passed even while the branch had a NameError, which is exactly how that
+        # bug nearly shipped.)
+        import os
+        import subprocess
+        import sys as _sys
+
+        result = subprocess.run(
+            [_sys.executable, '-c', 'import app'],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            env={**os.environ, 'TRUST_PROXY': '1', 'TRUST_PROXY_HOPS': '50'},
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert 'TRUST_PROXY_HOPS=50 is unusually high' in result.stderr
+
+    def test_normal_hops_does_not_warn(self):
+        # The other half of the proof: the warning must stay SILENT under normal
+        # config. Without this, an inverted or `>=` condition (fire-always, or
+        # fire at the boundary) would pass every other test — none of which
+        # inspect stderr. hops=8 is the boundary: `> 8` must not fire here.
+        import os
+        import subprocess
+        import sys as _sys
+
+        result = subprocess.run(
+            [_sys.executable, '-c', 'import app'],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            env={**os.environ, 'TRUST_PROXY': '1', 'TRUST_PROXY_HOPS': '8'},
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert 'unusually high' not in result.stderr
 
     def test_trust_proxy_off_ignores_xff(self):
         with _app.app.test_request_context(

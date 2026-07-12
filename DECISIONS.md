@@ -192,6 +192,47 @@ lock is on it. Only the exact string `"1"` enables; a typo (`"true"`, `"yes"`,
 `"2"`) leaves it off rather than silently starting to spend. CI needs no API key
 precisely because this default holds.
 
+**V4 — The per-source budget key is the client IP; and what that actually buys
+(2026-07-12).**
+
+`source` for `SEMANTIC_PER_SOURCE_HOURLY` is the client IP as returned by
+`app.get_client_ip()` — the same value, from the same call, that already keys
+`is_rate_limited()` and `_check_fingerprint()`. Chosen because P3's per-source
+budget defends a FAIRNESS property ("one attacker cannot starve every other
+session"), and a session is an actor, not a payload. Keying on the prompt hash
+instead would rate-limit *content* — one attacker varying prompts would get an
+unlimited supply of fresh buckets, which defends nothing. Two different
+"per-source" concepts inside one codebase would also be a footgun in its own
+right; there is one.
+
+**What the per-source cap actually is, stated plainly:** a fairness heuristic
+with a known, cheap bypass — NOT an anti-evasion control. IP rotation is
+commodity (residential proxies, cloud pools), and a motivated adversary rotating
+IPs gets a fresh 5/hr bucket per IP, so per-source budgeting stops bounding that
+adversary at all. It only ever protected against an unsophisticated flood from a
+single address. **The security property that actually survives IP rotation is the
+GLOBAL cap** (60/hr, 300/day): no actor, however they rotate, can push spend past
+that ceiling. The global cap is the backstop; the per-source cap is politeness
+between sessions. Anyone reading this — including a reviewer of this portfolio —
+should not mistake the second for the first.
+
+**Deployment-conditional severity (verified in app.py, not assumed):**
+`get_client_ip()` ignores `X-Forwarded-For` unless `TRUST_PROXY=1` (default `0`),
+so on direct exposure the key is `request.remote_addr` — rotatable but NOT
+spoofable. With `TRUST_PROXY=1` it takes the LEFTMOST XFF entry, which is correct
+only if the fronting proxy OVERWRITES the header. Behind a proxy that APPENDS,
+the leftmost value is attacker-supplied and the per-source cap becomes bypassable
+with a header rather than with an IP pool — no rotation required. This is
+precisely why CLAUDE.md already says `TRUST_PROXY=1` only behind a trusted
+reverse proxy and never on direct exposure; the semantic budget now depends on
+that rule too, so the consequence of breaking it is larger than it was.
+
+**Single extraction, structurally:** `/chat` calls `get_client_ip()` ONCE and
+passes that local into rate limiting, fingerprinting, and now the semantic
+layer's `source`. The classifier receives the value; it must never re-derive it.
+Two extraction paths for "who is this" would be an implicit-consistency
+assumption of exactly the kind this file exists to eliminate.
+
 **V3 — Skip accounting (schema).** `semantic_verdict` is NULL whenever the
 judge does not speak; the verdict vocabulary stays closed
 (CLEAN/SUSPICIOUS/JAILBREAK, matching ai-firewall's `VALID_VERDICTS`), so a
@@ -515,3 +556,67 @@ same failure shape as a good idea stated only in prose.
   "LLM fallback" comment cleanup (earmarked in CLAUDE.md since Phase A);
   dashboard surfacing (disagreement counts, budget domination,
   semantic_skipped); P6c corpus seeded + recurring hardening pass documented.
+
+---
+
+## Security finding — X-Forwarded-For leftmost-trust in get_client_ip() (2026-07-12)
+
+A distinct, PRE-EXISTING bug (its own commit, not part of the semantic layer),
+recorded here because of HOW it was found and what it demonstrates.
+
+**How it surfaced:** not a dedicated audit. V4 keys the per-source semantic
+budget on `get_client_ip()`, so reviewing that dependency meant reading the
+function — and the read found the bug. This is the "score ≠ blast radius"
+thesis in action at the process level: tracing what a new feature *depends on*
+catches defects an isolated review of unrelated code never would.
+
+**The bug:** `get_client_ip()` extracted `forwarded.split(',')[0]` — the
+LEFTMOST X-Forwarded-For entry — when `TRUST_PROXY=1`. Appending proxies (nginx
+`$proxy_add_x_forwarded_for`, Cloudflare) put the address the proxy actually
+observed on the RIGHT; the leftmost entry is whatever the client sent, i.e.
+attacker-controlled. So an attacker sets `X-Forwarded-For: <anything>` and that
+value becomes their rate-limit / fingerprint / (Phase B) per-source-budget key —
+the exact spoofing the whole `TRUST_PROXY` machinery exists to prevent. And the
+README actively recommended `TRUST_PROXY=1` behind exactly nginx/Cloudflare,
+steering deployers into the broken config in good faith. No live exposure (no
+deployment exists yet), but broken *guidance* is arguably worse than a live bug:
+it will be followed.
+
+**A test had certified the bug as correct.** `test_first_ip_in_comma_list_validated`
+asserted `'203.0.113.5, 10.0.0.1' -> '203.0.113.5'` with the comment "valid
+first hop" — the SAME wrong mental model as the code. Code and test were wrong
+in identical ways, so green read as proof of correctness. This is a distinct
+proxy-test sub-class: not "the test checks a proxy for the property" but "the
+test and the code share the same false belief," and its fix is different — an
+independent check on the belief (XFF append semantics, verifiable against
+nginx's documented `$proxy_add_x_forwarded_for`), not just "test the mechanism."
+
+**The fix:**
+- `TRUST_PROXY_HOPS` (env, default 1): the real client is the entry
+  `TRUST_PROXY_HOPS` from the RIGHT — each trusted proxy appends exactly one.
+- **Fail closed on a short header:** if there are fewer entries than hops, fall
+  through to `remote_addr` — NEVER back to `parts[0]`, which would restore the
+  original leftmost-trust bug under a truncated/crafted header.
+- Whitespace/empty entries stripped before counting; a malformed selected entry
+  falls back rather than crashing.
+- Startup warning when `TRUST_PROXY_HOPS > 8` (`max(1, …)` already guards the
+  low end): too-high silently walks the trust boundary back toward the client,
+  so an almost-certainly-typo'd value is never silent. Warn, not hard-fail, so a
+  genuine deep chain still runs.
+- README corrected so it no longer recommends the broken configuration.
+
+**Proven by paired subprocess tests:** the warning fires at module import, so it
+is tested by executing the real import path with the env set (an import-only
+check would pass even with a NameError in that branch — which nearly shipped).
+Positive case `TRUST_PROXY_HOPS=50` asserts the warning; negative case
+`TRUST_PROXY_HOPS=8` (the exact boundary) asserts silence — together they pin
+`>` vs `>=` and rule out a fire-always condition. Extraction logic covered
+in-process: rightmost single-hop, multi-hop Nth-from-right, spoofed-leftmost
+ignored, short-header fail-closed, malformed fallback.
+
+**Operator responsibility, stated:** `TRUST_PROXY_HOPS` must equal the real
+proxy count. Set too high AND fronted such that an attacker can pad the header,
+leftward (attacker) entries become trusted again. The code cannot know the true
+topology; the short-header fail-closed and the >8 warning cover the common
+misconfigurations, the rest is deployment discipline (mirrors CLAUDE.md's
+existing "TRUST_PROXY=1 only behind a trusted reverse proxy" rule).

@@ -61,13 +61,16 @@ If `DASHBOARD_SECRET` is not set, all routes are open (fine for localhost, **not
 
 ### Reverse proxy / X-Forwarded-For
 
-If you run the honeypot behind nginx, Caddy, Cloudflare, or any other reverse proxy, set `TRUST_PROXY=1` so the real visitor IP is extracted from `X-Forwarded-For`:
+If you run the honeypot behind nginx, Caddy, Cloudflare, or any other reverse proxy, set `TRUST_PROXY=1` **and** `TRUST_PROXY_HOPS` to the number of trusted proxies in front of the app:
 
 ```
 TRUST_PROXY=1
+TRUST_PROXY_HOPS=1   # 1 for a single reverse proxy; increase only per real added hop
 ```
 
-Leave it unset (or `TRUST_PROXY=0`) for direct internet exposure. When `TRUST_PROXY` is off, the honeypot uses the raw socket address — attackers cannot spoof their IP to bypass rate limiting or hide scripted scan patterns in the fingerprinting data.
+Why the hop count matters: proxies like nginx (`$proxy_add_x_forwarded_for`) and Cloudflare **append** to `X-Forwarded-For`, so the address the proxy actually saw is on the **right**, while the leftmost entries are whatever the client sent — attacker-controlled. The honeypot reads the entry `TRUST_PROXY_HOPS` from the right. Set `TRUST_PROXY_HOPS` to your real proxy count: too low picks an internal proxy IP (harmless), too high starts trusting attacker-supplied entries again (the app warns at startup for unreasonably high values). If the header is shorter than the hop count, it fails closed to the socket address rather than trusting the leftmost value.
+
+Leave `TRUST_PROXY` unset (or `TRUST_PROXY=0`) for direct internet exposure. When it's off, the honeypot uses the raw socket address — attackers cannot spoof their IP to bypass rate limiting or hide scripted scan patterns in the fingerprinting data.
 
 ### Debug mode
 
