@@ -40,5 +40,14 @@ class AnalysisRecord(BaseModel):
     flags: dict[str, Any] = {}
     sentiment_score: float = 0.0
     framing_type: str = "none"
+    # Phase B semantic layer (V3/V5). NULL until the wiring populates them.
+    # The closed vocabularies are enforced by CHECK constraints in db.py,
+    # derived from semantic.py's constants — deliberately NOT duplicated here
+    # as Literal types, so there is exactly one enforcement point below the
+    # app layer and out-of-vocabulary values fail loud (IntegrityError), not
+    # silently reset to a blank record by the ValidationError fallback.
+    semantic_verdict: str | None = None
+    semantic_skip_reason: str | None = None
+    semantic_disagreement: str | None = None
 
     model_config = {"extra": "ignore"}

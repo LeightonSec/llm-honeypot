@@ -233,6 +233,60 @@ layer's `source`. The classifier receives the value; it must never re-derive it.
 Two extraction paths for "who is this" would be an implicit-consistency
 assumption of exactly the kind this file exists to eliminate.
 
+**V5 — DB-level vocabulary enforcement: CHECK constraints DERIVED from the
+Python enums (2026-07-12).**
+
+The three closed-vocabulary columns (`semantic_verdict`, `semantic_skip_reason`,
+`semantic_disagreement`) carry `CHECK(col IN (...) OR col IS NULL)` constraints.
+The allowed-value lists are **generated from `semantic.py`'s constants**
+(`set(VERDICT_TO_SEVERITY)`, `SKIP_REASONS`, `DISAGREEMENTS`) at schema-build
+time, never hand-copied. One source of truth: a new value (as `JUDGE_FAILED`
+recently was) flows into the constraint automatically — the hand-synced-lists
+drift risk is eliminated by construction, not managed by a comment.
+
+**Single source spans the APP layer too, not just the schema.** `merge()`
+previously returned the bare literals `"judge_disagreement_up"` /
+`"judge_disagreement_down"`; it is refactored to return the `DISAGREEMENTS`
+constants. Otherwise the schema would derive from one list while the application
+emitted another copy of the same strings — the exact two-unlinked-sources drift
+this decision exists to remove, half-solved.
+
+**Injection safety is CONDITIONAL and stated at the call site.** Building a
+`CHECK(... IN (...))` clause by interpolating a Python collection into SQL is
+safe ONLY because every value is a hardcoded string literal defined in
+semantic.py, never derived from external input, and the builder does not escape
+what it interpolates. A one-line comment at the builder records this: the moment
+anyone loads one of these enums from config or user input, this becomes a SQL
+injection vector. The assumption is load-bearing and must be visible to a future
+editor, not implicit.
+
+**Enforcement across the CI matrix, with a decided fallback (answering "what
+does red mean").** Fresh databases get the CHECK via `CREATE TABLE` — universal,
+enforced on every SQLite version. Existing (pre-Phase-B) databases get it via
+`ALTER TABLE ADD COLUMN … CHECK`; verified enforced on SQLite 3.53 locally, and
+a raw-SQL enforcement test asserts it on every CI Python's bundled SQLite. **If
+any CI leg shows the constraint is NOT enforced, that is a loud red, and the
+response is NOT a silent no-constraint fallback** — a constraint silently absent
+on some platforms is worse than none, because it manufactures false confidence.
+The response is either to drop support for that platform or to switch the
+migration to SQLite's recommended table-rebuild (new table with the CHECK, copy
+rows, drop, rename). Decided now, not mid-incident: uniform enforcement or a
+loud failure, never silent divergence.
+
+**Consequence — the migration must not swallow the failure.** The existing
+migration loop catches `OperationalError` to skip already-present columns, which
+would ALSO swallow a "CHECK unsupported" error and silently ship an
+unconstrained column — precisely the silent-weaker outcome just rejected. The
+loop is tightened to re-raise any `OperationalError` that is not a
+duplicate-column, so an unenforcing platform surfaces loudly.
+
+**Two tests, two guarantees (the Criterion-C distinction, in schema form):** a
+raw-SQL out-of-vocabulary insert proves the CONSTRAINT enforces (defense in
+depth, runs the matrix); a `log_attack()` write-path test proves the PRODUCTION
+path persists in-vocabulary rows (object-level guarantee vs row-level guarantee).
+Plus a round-trip test inserting every legal enum value, which catches a
+derivation bug that dropped a value from the generated `IN (...)` list.
+
 **V3 — Skip accounting (schema).** `semantic_verdict` is NULL whenever the
 judge does not speak; the verdict vocabulary stays closed
 (CLEAN/SUSPICIOUS/JAILBREAK, matching ai-firewall's `VALID_VERDICTS`), so a

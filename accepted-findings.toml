@@ -1,6 +1,9 @@
 # Accepted false positives for llm-honeypot.
 # Each entry removes a finding from gate consideration — severity remains visible in the report.
 # Required fields: scanner, file, match (substring), rationale, reviewer, date.
+# KNOWN GAP: entries are permanent — the gate's loader has no expiry support yet.
+# Waiver-expiry (A1) is the top security-gate hardening-backlog item; when it
+# ships, every entry here gets an expiry on the next touch.
 
 [[accepted]]
 scanner   = "git_history"
@@ -17,3 +20,19 @@ match     = "4580565d"
 rationale = "ANTHROPIC_API_KEY=sk-ant-your-key-here in .env.example edit — same example placeholder as 4562cfee, touched during gate tooling setup."
 reviewer  = "leighton"
 date      = "2026-05-30"
+
+[[accepted]]
+scanner   = "web_app"
+file      = "db.py"
+match     = "conn.execute(f'''"
+rationale = "V5 schema DDL: CREATE TABLE interpolates column definitions derived from semantic.py's hardcoded closed vocabularies. Every value is validated against [A-Za-z0-9_] by the assert in _vocab_check before interpolation, DDL cannot be parameterised in SQLite, and no external input can reach the statement. The alternative — hand-copied column lists — is the drift class V5 exists to eliminate."
+reviewer  = "leighton"
+date      = "2026-07-14"
+
+[[accepted]]
+scanner   = "web_app"
+file      = "test_hardening.py"
+match     = "SELECT {column} FROM attacks"
+rationale = "V5 test helper: {column} is pytest-parametrised over V5_VOCABULARIES keys — three column-name literals derived from semantic.py's constants, inside the test suite. No external input exists in this context; a hardcoded per-column query dict would guard a snapshot of the vocabulary, not the vocabulary."
+reviewer  = "leighton"
+date      = "2026-07-14"

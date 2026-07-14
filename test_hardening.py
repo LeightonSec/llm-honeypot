@@ -1009,3 +1009,156 @@ class TestRetentionPurge:
         assert stats["total"] == 0
         assert stats["oldest_timestamp"] is None
         assert stats["eligible_for_purge"] == 0
+
+
+# ---------------------------------------------------------------------------
+# V5 — semantic vocabulary CHECK constraints (schema derived from semantic.py)
+# ---------------------------------------------------------------------------
+
+import semantic as _semantic
+
+
+@pytest.fixture()
+def fresh_db(tmp_path, monkeypatch):
+    """A database created by init_db() itself — the CREATE TABLE path."""
+    db_file = tmp_path / "honeypot_fresh.db"
+    monkeypatch.setattr(_db, "DB_PATH", str(db_file))
+    _db.init_db()
+    return db_file
+
+
+# Derived from the live constants, same as the schema itself — a hardcoded
+# copy here would guard a snapshot of the vocabulary, not the vocabulary.
+V5_VOCABULARIES = {
+    "semantic_verdict": sorted(set(_semantic.VERDICT_TO_SEVERITY)),
+    "semantic_skip_reason": sorted(_semantic.SKIP_REASONS),
+    "semantic_disagreement": sorted(_semantic.DISAGREEMENTS),
+}
+
+
+def _raw_insert(db_file, column, value):
+    with _sqlite3.connect(str(db_file)) as conn:
+        conn.execute(
+            f"INSERT INTO attacks (timestamp, prompt, {column}) VALUES ('t', 'p', ?)",
+            (value,),
+        )
+        conn.commit()
+
+
+class TestV5RawConstraintEnforcement:
+    """Row-level guarantee (V5 tier 1): the CONSTRAINT itself enforces on this
+    platform's bundled SQLite. Runs across the CI matrix — an unenforced CHECK
+    on any leg is a loud red here, never a silent no-constraint fallback.
+    """
+
+    @pytest.mark.parametrize("column", sorted(V5_VOCABULARIES))
+    def test_out_of_vocabulary_rejected(self, fresh_db, column):
+        with pytest.raises(_sqlite3.IntegrityError):
+            _raw_insert(fresh_db, column, "NOT_A_LEGAL_VALUE")
+
+    @pytest.mark.parametrize(
+        "column,value",
+        [(c, v) for c, vals in V5_VOCABULARIES.items() for v in vals],
+    )
+    def test_every_legal_value_round_trips(self, fresh_db, column, value):
+        # Catches a derivation bug that drops a value from the generated IN (...)
+        _raw_insert(fresh_db, column, value)
+        with _sqlite3.connect(str(fresh_db)) as conn:
+            stored = conn.execute(f"SELECT {column} FROM attacks").fetchone()[0]
+        assert stored == value
+
+    @pytest.mark.parametrize("column", sorted(V5_VOCABULARIES))
+    def test_null_is_legal(self, fresh_db, column):
+        _raw_insert(fresh_db, column, None)  # skip rows and pre-wiring rows
+
+
+class TestV5WritePath:
+    """Object-level guarantee (V5 tier 2): the PRODUCTION path persists
+    in-vocabulary rows — distinct from proving the constraint exists.
+    """
+
+    def test_log_attack_persists_judged_row(self, fresh_db):
+        row_id = _db.log_attack("1.2.3.4", "ua", "prompt", {
+            "semantic_verdict": "JAILBREAK",
+            "semantic_disagreement": _semantic.DISAGREEMENT_UP,
+        })
+        with _sqlite3.connect(str(fresh_db)) as conn:
+            conn.row_factory = _sqlite3.Row
+            row = dict(conn.execute(
+                "SELECT * FROM attacks WHERE id = ?", (row_id,)
+            ).fetchone())
+        assert row["semantic_verdict"] == "JAILBREAK"
+        assert row["semantic_disagreement"] == _semantic.DISAGREEMENT_UP
+        assert row["semantic_skip_reason"] is None
+
+    def test_log_attack_persists_skipped_row(self, fresh_db):
+        row_id = _db.log_attack("1.2.3.4", "ua", "prompt", {
+            "semantic_skip_reason": _semantic.DISABLED,
+        })
+        with _sqlite3.connect(str(fresh_db)) as conn:
+            conn.row_factory = _sqlite3.Row
+            row = dict(conn.execute(
+                "SELECT * FROM attacks WHERE id = ?", (row_id,)
+            ).fetchone())
+        assert row["semantic_skip_reason"] == _semantic.DISABLED
+        assert row["semantic_verdict"] is None
+        assert row["semantic_disagreement"] is None
+
+    def test_log_attack_without_semantic_keys_writes_nulls(self, fresh_db):
+        # A pre-wiring caller (today's app.py) passes no semantic keys at all.
+        row_id = _db.log_attack("1.2.3.4", "ua", "prompt", {"risk_level": "LOW"})
+        with _sqlite3.connect(str(fresh_db)) as conn:
+            row = conn.execute(
+                "SELECT semantic_verdict, semantic_skip_reason, semantic_disagreement"
+                " FROM attacks WHERE id = ?", (row_id,)
+            ).fetchone()
+        assert row == (None, None, None)
+
+
+class TestV5Migration:
+    """The ALTER TABLE path: a pre-Phase-B database — built by the tmp_db
+    fixture with the OLD schema and three existing rows — migrated in place.
+    """
+
+    def test_migration_adds_all_three_columns(self, tmp_db):
+        _db.init_db()
+        with _sqlite3.connect(str(tmp_db)) as conn:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(attacks)")}
+        assert set(V5_VOCABULARIES) <= cols
+
+    @pytest.mark.parametrize("column", sorted(V5_VOCABULARIES))
+    def test_migrated_constraint_enforces(self, tmp_db, column):
+        # The ALTER-added CHECK, not the CREATE TABLE one: V5's decided
+        # fallback says an unenforcing platform must show up as a loud red.
+        _db.init_db()
+        with pytest.raises(_sqlite3.IntegrityError):
+            _raw_insert(tmp_db, column, "NOT_A_LEGAL_VALUE")
+
+    def test_migration_preserves_existing_rows(self, tmp_db):
+        _db.init_db()
+        with _sqlite3.connect(str(tmp_db)) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM attacks").fetchone()[0]
+            nulls = conn.execute(
+                "SELECT COUNT(*) FROM attacks WHERE semantic_verdict IS NULL"
+                " AND semantic_skip_reason IS NULL AND semantic_disagreement IS NULL"
+            ).fetchone()[0]
+        assert count == 3 and nulls == 3
+
+    def test_migration_is_idempotent(self, tmp_db):
+        _db.init_db()
+        _db.init_db()  # duplicate-column errors are the ONE thing swallowed
+
+    def test_non_duplicate_operational_error_propagates(self, tmp_path, monkeypatch):
+        # V5: the migration loop must not swallow a non-duplicate-column
+        # OperationalError — that is how an unsupported CHECK would silently
+        # ship an unconstrained column. Force one: with `attacks` existing as
+        # a VIEW, CREATE TABLE IF NOT EXISTS is suppressed but ALTER TABLE
+        # fails with "Cannot add a column to a view" — same exception type,
+        # different message, and it must raise, not pass.
+        db_file = tmp_path / "honeypot_view.db"
+        monkeypatch.setattr(_db, "DB_PATH", str(db_file))
+        with _sqlite3.connect(str(db_file)) as conn:
+            conn.execute("CREATE VIEW attacks AS SELECT 1 AS id")
+            conn.commit()
+        with pytest.raises(_sqlite3.OperationalError):
+            _db.init_db()

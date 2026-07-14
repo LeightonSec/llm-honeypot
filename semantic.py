@@ -78,6 +78,18 @@ SKIP_REASONS = (
     | {JUDGE_FAILED, DISABLED}
 )
 
+# --- disagreement flags (P6b): semantic_disagreement's closed vocabulary -----
+# V5: db.py derives the column's CHECK constraint from DISAGREEMENTS, and
+# merge() returns these same constants — one source of truth for schema and
+# application, never two hand-synced copies of the strings. The VALUES are
+# wire format (persisted rows + CHECK vocabulary): changing one is a schema
+# migration event, and test_semantic.py pins them for exactly that reason.
+
+DISAGREEMENT_UP = "judge_disagreement_up"      # max() obeys — noise-injection suspect
+DISAGREEMENT_DOWN = "judge_disagreement_down"  # max() ignores — persuasion-to-clear suspect
+
+DISAGREEMENTS = frozenset({DISAGREEMENT_UP, DISAGREEMENT_DOWN})
+
 
 def is_enabled() -> bool:
     """V2b kill switch. Default OFF — fail-closed in the deployment dimension."""
@@ -342,9 +354,9 @@ def merge(local_risk: str, semantic_verdict: str | None) -> MergeResult:
     semantic_rank = SEVERITY_ORDER[semantic_risk]
 
     if semantic_rank > local_rank:
-        disagreement = "judge_disagreement_up"     # max() obeys — noise-injection suspect
+        disagreement = DISAGREEMENT_UP
     elif semantic_rank < local_rank:
-        disagreement = "judge_disagreement_down"   # max() ignores — persuasion-to-clear suspect
+        disagreement = DISAGREEMENT_DOWN
     else:
         disagreement = None
 

@@ -32,6 +32,8 @@ from semantic import (
     BUDGET_GLOBAL,
     BUDGET_SOURCE,
     DISABLED,
+    DISAGREEMENT_DOWN,
+    DISAGREEMENT_UP,
     ENTERS_BAND,
     JUDGE_FAILED,
     JUDGED,
@@ -510,11 +512,11 @@ def test_merge_shape_illustration_not_criterion_c():
 def test_merge_is_additive_only_and_flags_both_directions():
     down = merge("MEDIUM", "CLEAN")
     assert down.risk_level == "MEDIUM"                      # exoneration impossible
-    assert down.disagreement == "judge_disagreement_down"
+    assert down.disagreement == DISAGREEMENT_DOWN
 
     up = merge("MEDIUM", "JAILBREAK")
     assert up.risk_level == "HIGH"                          # max() obeys
-    assert up.disagreement == "judge_disagreement_up"
+    assert up.disagreement == DISAGREEMENT_UP
 
     same = merge("MEDIUM", "SUSPICIOUS")
     assert same.risk_level == "MEDIUM" and same.disagreement is None
@@ -534,7 +536,7 @@ def test_merge_up_direction_is_reachable_from_the_locked_band():
         judge=stub_judge("JAILBREAK"),
         now=1000.0,
     )
-    assert result.disagreement == "judge_disagreement_up"
+    assert result.disagreement == DISAGREEMENT_UP
     assert result.risk_level == "HIGH"
 
 

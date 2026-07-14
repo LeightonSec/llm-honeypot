@@ -6,13 +6,47 @@ from datetime import datetime, timezone
 from pydantic import ValidationError
 
 from schemas import AnalysisRecord
+from semantic import DISAGREEMENTS, SKIP_REASONS, VERDICT_TO_SEVERITY
 
 DB_PATH = os.path.join(os.path.dirname(__file__), 'honeypot.db')
 
 
+def _vocab_check(col: str, values) -> str:
+    """Column definition with a CHECK constraint derived from semantic.py (V5).
+
+    Interpolating a Python collection into SQL is safe ONLY because every value
+    is a hardcoded string literal defined in semantic.py, never derived from
+    config or external input — nothing here is escaped. The assert below turns
+    that discipline invariant into a schema-build-time check: a future
+    vocabulary loaded from config or a plugin registry crashes loudly here
+    instead of shipping a SQL injection vector.
+    """
+    for v in values:
+        assert v.replace("_", "").isalnum(), f"unsafe value in vocab for {col}: {v!r}"
+    vocab = ", ".join(f"'{v}'" for v in sorted(values))
+    return f"TEXT CHECK ({col} IN ({vocab}) OR {col} IS NULL)"
+
+
+# The three closed-vocabulary semantic columns (V5), generated from semantic.py's
+# constants at schema-build time — never hand-copied lists. The judge's REASON is
+# free text and deliberately has NO column (P4: no judge free text reaches
+# storage or a render sink); CONFIDENCE is unpersisted until something consumes it.
+SEMANTIC_COLUMNS = [
+    ("semantic_verdict",      _vocab_check("semantic_verdict", set(VERDICT_TO_SEVERITY))),
+    ("semantic_skip_reason",  _vocab_check("semantic_skip_reason", SKIP_REASONS)),
+    ("semantic_disagreement", _vocab_check("semantic_disagreement", DISAGREEMENTS)),
+]
+
+
 def init_db():
+    # Fresh databases get the semantic CHECK constraints via CREATE TABLE
+    # (universal); pre-Phase-B databases get them via ALTER TABLE below. Both
+    # paths consume SEMANTIC_COLUMNS — the vocabulary is derived once.
+    semantic_defs = ",\n                ".join(
+        f"{col} {definition}" for col, definition in SEMANTIC_COLUMNS
+    )
     with sqlite3.connect(DB_PATH) as conn:
-        conn.execute('''
+        conn.execute(f'''
             CREATE TABLE IF NOT EXISTS attacks (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp       TEXT NOT NULL,
@@ -23,25 +57,33 @@ def init_db():
                 attack_type     TEXT,
                 risk_level      TEXT,
                 keyword_score   INTEGER DEFAULT 0,
-                keyword_matches TEXT DEFAULT '{}',
+                keyword_matches TEXT DEFAULT '{{}}',
                 api_verdict     TEXT,
                 api_confidence  TEXT,
                 api_reason      TEXT,
-                flags           TEXT DEFAULT '{}',
+                flags           TEXT DEFAULT '{{}}',
                 sentiment_score REAL DEFAULT 0.0,
-                framing_type    TEXT DEFAULT 'none'
+                framing_type    TEXT DEFAULT 'none',
+                {semantic_defs}
             )
-        ''')
+        ''')  # gate: ignore — interpolated SQL is built only from semantic.py's hardcoded vocabularies, validated in _vocab_check; no external input can reach it
         # Migrations: add columns to databases that pre-date them
         for col, definition in [
             ("flags",           "TEXT DEFAULT '{}'"),
             ("sentiment_score", "REAL DEFAULT 0.0"),
             ("framing_type",    "TEXT DEFAULT 'none'"),
+            *SEMANTIC_COLUMNS,
         ]:
             try:
                 conn.execute(f"ALTER TABLE attacks ADD COLUMN {col} {definition}")
-            except sqlite3.OperationalError:
-                pass  # column already exists
+            except sqlite3.OperationalError as exc:
+                # V5: ONLY "column already exists" may be swallowed. Anything
+                # else — notably a platform refusing or not enforcing
+                # ADD COLUMN ... CHECK — must surface loudly; swallowing it
+                # would silently ship an unconstrained column, the exact
+                # silent-weaker outcome V5 rejects.
+                if "duplicate column name" not in str(exc):
+                    raise
         conn.commit()
 
 
@@ -56,8 +98,9 @@ def log_attack(ip: str, user_agent: str, prompt: str, analysis: dict) -> int:
             '''INSERT INTO attacks
                (timestamp, ip_address, user_agent, prompt, response, attack_type,
                 risk_level, keyword_score, keyword_matches, api_verdict, api_confidence,
-                api_reason, flags, sentiment_score, framing_type)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                api_reason, flags, sentiment_score, framing_type,
+                semantic_verdict, semantic_skip_reason, semantic_disagreement)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
             (
                 datetime.now(timezone.utc).isoformat(),
                 ip,
@@ -74,6 +117,9 @@ def log_attack(ip: str, user_agent: str, prompt: str, analysis: dict) -> int:
                 json.dumps(record.flags),
                 record.sentiment_score,
                 record.framing_type,
+                record.semantic_verdict,
+                record.semantic_skip_reason,
+                record.semantic_disagreement,
             )
         )
         conn.commit()
