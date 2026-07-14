@@ -29,6 +29,21 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
+      # ai-firewall (the Phase B judge) is pinned to a known-good commit, same
+      # discipline as security-gate below. It cannot live in the hashed lockfile
+      # (pip's hash mode refuses VCS URLs), so it installs --no-deps and its
+      # library deps (anthropic, python-dotenv) are pinned in requirements.in —
+      # mirror ai-firewall's pyproject and bump together on any SHA bump.
+      - name: Install ai-firewall (pinned, --no-deps)
+        run: pip install --no-deps "ai-firewall @ git+https://github.com/LeightonSec/ai-firewall@91fc9aa3d836b1d563aa0f69cda27d53d7956775"
+
+      # Import smoke: proves the pinned SHA resolves, builds, and imports
+      # against the lockfile-pinned deps on every matrix Python — CI must not
+      # go green with an uninstallable judge (tests inject stubs and would
+      # never notice).
+      - name: ai-firewall import smoke
+        run: python -c "from ai_firewall.detector import api_scan; print('ai_firewall import OK')"
+
       - name: Run tests
         run: pytest -q
 

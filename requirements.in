@@ -1,8 +1,15 @@
-# Direct runtime dependencies for llm-honeypot (local-only detection pipeline).
+# Direct runtime dependencies for llm-honeypot (local detection pipeline +
+# Phase B semantic layer).
 # Compile with: uv pip compile --universal --python-version 3.10 --generate-hashes requirements.in -o requirements.txt
-# NOTE: anthropic / Claude API arrives in Phase B via the ai-firewall library,
-# not as a direct dependency here. The local pipeline imports none of it.
+#
+# ai-firewall (Phase B judge) CANNOT live in this file: the lockfile is
+# hash-checked and pip's hash mode refuses VCS URLs. It installs as a separate
+# pinned step — full SHA, --no-deps, same pattern as security-gate in CI:
+#   pip install --no-deps "ai-firewall @ git+https://github.com/LeightonSec/ai-firewall@91fc9aa3d836b1d563aa0f69cda27d53d7956775"
+# Its library deps are therefore pinned HERE, under the hashed lockfile, and
+# must mirror ai-firewall's pyproject (bump together on any SHA bump):
+anthropic==0.111.0
 Flask
 pydantic
-python-dotenv
+python-dotenv==1.2.2
 vaderSentiment
