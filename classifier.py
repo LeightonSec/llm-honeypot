@@ -297,11 +297,18 @@ def analyse_and_classify(prompt: str) -> dict:
     # Sentiment risk bump: emotional manipulation + framing upgrades risk and type.
     # Runs after keyword/LLM so it only overrides when those layers gave clean/unknown.
     risk_level = fw["risk_level"]
+    sentiment_bumped = False
     if sentiment["risk_bump"]:
         if risk_level == "LOW":
             risk_level = "MEDIUM"
         if attack_type in ("clean", "unknown"):
             attack_type = "social_engineering"
+            # G2-W: true ONLY when the bump MUTATED the type (V1b's watch cell
+            # is "reached from clean/unknown purely via the bump"). A bump that
+            # fires alongside a classifier-detected type must stay False —
+            # computed here at the mutation site because nowhere downstream can
+            # distinguish the two cases.
+            sentiment_bumped = True
 
     # Surface b64 payloads and detected framings in keyword_matches for logging
     keyword_matches = dict(fw.get("keyword_matches", {}))
@@ -323,4 +330,5 @@ def analyse_and_classify(prompt: str) -> dict:
         "fake_response": fake_response,
         "sentiment_score": sentiment["emotional_loading"],
         "framing_type": sentiment["framing_type"],
+        "sentiment_bumped": sentiment_bumped,
     }

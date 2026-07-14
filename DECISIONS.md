@@ -435,6 +435,62 @@ column at G2 (composes better, but builds for a G3 stake that may never arrive
 — revisit trigger documented above instead); one merged exclusivity test
 (fragile, and silently unverifies three of six outcomes — see above).
 
+### G2-W — Wiring decisions (2026-07-14)
+
+Four integration decisions, locked before code:
+
+**W1 — Call site: `app.py`'s `chat()`, after `analyse_and_classify()`, before
+`log_attack()`.** `evaluate()` needs `source` (request context the classifier
+does not have and should not grow); the classifier's signature and the
+sentiment → firewall → classifier order stay untouched. Verified single
+intake (repo-wide grep, production code): `chat()` is the only caller of
+`analyse_and_classify`/`log_attack` — no second entry point exists to create
+a judged/unjudged coverage split. **If a second prompt-intake route is ever
+added, it must call `evaluate()` the same way**; a route that skips it writes
+rows indistinguishable from `disabled`, and nothing in the schema can catch
+that.
+
+**W2 — Per-source budget key: client IP (`get_client_ip()`).** A
+prompt-fingerprint key lets an attacker mint a fresh bucket per unique prompt,
+collapsing the per-source cap into the global cap. IP is what rate limiting
+already keys on; spoofing requires the documented TRUST_PROXY
+misconfiguration. **Accepted cost, stated so it is not rediscovered as a
+mystery:** NAT/CGNAT populations (corporate egress, mobile carriers, campus
+networks) share one IP, so unrelated users can exhaust one "source's" budget
+with no attack occurring — their rows get `budget_source` even though only
+one of them (or none) was ever a threat. False scarcity for shared-egress
+users is the price of making per-source starvation structurally
+attacker-proof. The watch: if capture data shows `budget_source` clustering
+on known-shared egress ranges, revisit the key (IP+UA hash is the candidate),
+do not raise the cap first.
+
+**W3 — The attacker-visible response stays LOCAL (pre-merge).**
+`fake_response` is chosen from (attack_type, local risk) inside the classifier
+and is NOT re-picked after a judge escalation. A HIGH-pool response on
+escalation would leak the judge's opinion to exactly the attacker probing it;
+the boundary is response = f(local), storage = f(merge). Judge latency on
+in-band cases remains attacker-observable (timing) — P5's detectability
+honesty already covers this; do not pretend otherwise.
+
+**W4 — Judge injection seam: module-level `SEMANTIC_JUDGE = None` in app.py,
+passed through to `evaluate()`.** None means production default (lazy
+ai-firewall import). Integration tests monkeypatch it — `monkeypatch.setattr`
+ONLY, never bare assignment to the module global, so state auto-reverts and
+cannot leak across tests. This is what lets CI drive the full /chat route
+with SEMANTIC_ENABLED=1 and zero network, in the same commit as the wiring —
+no green-but-blind window between wiring and its tests.
+
+**Riding along:** `sentiment_bumped` is computed at the bump site in
+`analyse_and_classify` (risk_bump AND type was clean/unknown before the
+mutation) — computed anywhere else, classifier-detected social_engineering
+and bump-promoted watch-cell traffic are indistinguishable. The test suite
+must include the NEGATIVE case (classifier-detected social_engineering
+without a bump asserts sentiment_bumped=False), not just the positive one —
+an always-True flag passes a positive-only test. CLAUDE.md/README's "NO
+ai-firewall import and NO LLM calls" claims are corrected in the wiring
+commit (this repo's original headline finding was those docs lying in the
+other direction); the full doc rewrite stays G3.
+
 ## P4 — Both verdicts stored; judge output is untrusted data
 
 **Decision:** local and semantic verdicts are stored in separate columns

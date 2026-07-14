@@ -11,6 +11,7 @@ from time import time
 from flask import Flask, Response, jsonify, render_template, request
 from pydantic import ValidationError
 
+import semantic
 from classifier import analyse_and_classify
 from db import export_all, get_attacks, get_stats, init_db, log_attack
 from schemas import AttackFilter, ChatRequest
@@ -76,6 +77,14 @@ RATE_WINDOW = 60   # seconds
 # Session fingerprinting: track payload hashes to detect replay and scripted scans
 _fingerprint_counts: dict = {}          # prompt_hash -> times seen (any IP)
 _ip_payload_counts: dict = defaultdict(set)  # ip -> set of distinct payload hashes
+
+# Phase B semantic layer (DECISIONS.md G2-W). Single-worker in-memory state,
+# same caveat as the rate-limit and fingerprint stores above.
+# W4: None = production default (evaluate() lazy-imports ai-firewall's
+# api_scan). Tests replace this via monkeypatch.setattr ONLY — never bare
+# assignment to the module global.
+SEMANTIC_JUDGE = None
+_semantic_ledger = semantic.BudgetLedger()
 
 
 def get_client_ip() -> str:
@@ -199,6 +208,26 @@ def chat():
     user_agent = request.headers.get('User-Agent', '')[:512]
 
     analysis = analyse_and_classify(prompt)
+
+    # Phase B semantic layer (G2-W): runs AFTER the local pipeline (routing
+    # needs the post-fusion attack_type/risk_level), BEFORE log_attack.
+    # W2: per-source budget keys on client IP. W3: fake_response was already
+    # chosen from the LOCAL risk inside the classifier and is deliberately not
+    # re-picked — response = f(local), storage = f(merge).
+    semantic_result = semantic.evaluate(
+        prompt=prompt,
+        attack_type=analysis["attack_type"],
+        local_risk=analysis["risk_level"],
+        sentiment_bumped=analysis["sentiment_bumped"],
+        source=ip,
+        ledger=_semantic_ledger,
+        judge=SEMANTIC_JUDGE,
+    )
+    analysis["risk_level"] = semantic_result.risk_level
+    analysis["semantic_verdict"] = semantic_result.verdict
+    analysis["semantic_skip_reason"] = semantic_result.skip_reason
+    analysis["semantic_disagreement"] = semantic_result.disagreement
+
     analysis["flags"] = _check_fingerprint(ip, prompt)
     log_attack(ip, user_agent, prompt, analysis)
 

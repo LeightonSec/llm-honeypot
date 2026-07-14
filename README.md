@@ -22,7 +22,7 @@ The author accepts no liability for misuse.
 ## How it works
 
 1. Visitors land on a fake AI assistant ("Aria by NexusAI Labs")
-2. Every prompt runs through a local multi-signal detector — sentiment/framing analysis, keyword and weighted-pattern classification, unicode-confusable normalisation, base64 payload extraction. No LLM calls; fully offline
+2. Every prompt runs through a local multi-signal detector — sentiment/framing analysis, keyword and weighted-pattern classification, unicode-confusable normalisation, base64 payload extraction. Local and offline by default; with `SEMANTIC_ENABLED=1` the one genuinely ambiguous cell additionally gets a second opinion from the pinned [ai-firewall](https://github.com/LeightonSec/ai-firewall) judge — escalation-only, budget-capped (see `DECISIONS.md`)
 3. A second classifier maps the attempt to one of five attack types
 4. A convincing but deflecting response is returned — the attacker sees nothing unusual
 5. All attempts are logged to SQLite with full metadata
@@ -116,10 +116,11 @@ cp .env.example .env
 ```
 
 Set `DASHBOARD_SECRET` (see Security configuration above). No API key is
-needed: detection is fully local. (Phase B — the ai-firewall library
-integration — will introduce `ANTHROPIC_API_KEY` when it lands; do not
-configure one before there is code that uses it, least of all on a host
-whose purpose is attracting attackers.)
+needed by default: the semantic judge ships OFF and detection is fully
+local. Set `ANTHROPIC_API_KEY` — a dedicated, spend-capped key, never a
+shared one — only together with `SEMANTIC_ENABLED=1`; do not configure a
+credential nothing uses, least of all on a host whose purpose is attracting
+attackers.
 
 ### 5. Run
 
@@ -186,7 +187,7 @@ Designed to capture and classify unsolicited prompt attacks against a fake publi
 ## Limitations
 
 - Rate limit and fingerprint stores are in-memory — reset on restart, not suitable for multi-instance deployments
-- Detection is local-only (pattern + sentiment); there is no semantic/LLM layer until Phase B ships — novel attacks with no lexical signature will be under-classified
+- The semantic (LLM-judge) layer is default-OFF and deliberately narrow — escalation-only on one ambiguous cell, budget-capped; with it disabled, novel attacks with no lexical signature will be under-classified, and even enabled it does not widen coverage beyond that cell. Judge egress is detectable by a capable attacker (`DECISIONS.md` P5)
 - SQLite is single-file — not designed for high-concurrency write loads
 - No persistent attacker tracking across sessions (session fingerprints cleared at 50k entries)
 
