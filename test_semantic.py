@@ -22,6 +22,7 @@ until that test exists; nothing in this file should be read as covering it.
 """
 
 import itertools
+from types import SimpleNamespace
 
 import pytest
 
@@ -608,6 +609,199 @@ def test_criterion_d_success_resets_the_error_count():
     evaluate(**in_band_case(), ledger=ledger, judge=stub_judge("CLEAN"), now=1002.0)
     assert ledger.stats(now=1002.0)["consecutive_errors"] == 0
     assert ledger.stats(now=1002.0)["breaker_open"] is False
+
+
+# ============================================================================
+# V3b: an anomalous result is a healthy call for the breaker
+# ============================================================================
+# Named test_v3b_* (not criterion_d) so `-k criterion_d` still selects exactly
+# the original four Criterion D items, proving they pass unchanged.
+
+def flagged_judge(**flags):
+    """A None verdict carrying ai-firewall's flags (or deliberately broken ones)."""
+    def _judge(_prompt):
+        return {"VERDICT": None, "CONFIDENCE": "LOW", "REASON": "stub", **flags}
+    return _judge
+
+
+def must_not_be_called(_prompt):
+    raise AssertionError("breaker is open: the judge must NOT be called")
+
+
+def test_v3b_anomalous_none_does_not_count():
+    """More anomalous results than the trip threshold: the breaker stays closed,
+    the error count stays at zero, and every call still consumed budget."""
+    ledger = fresh_ledger(breaker_consecutive_errors=3)
+    judge = flagged_judge(anomalous=True)
+
+    for i in range(4):
+        r = evaluate(**in_band_case(source=f"s{i}"), ledger=ledger, judge=judge,
+                     now=1000.0 + i)
+        assert r.skip_reason == JUDGE_FAILED, f"call {i}"
+
+    stats = ledger.stats(now=1003.0)
+    assert stats["consecutive_errors"] == 0
+    assert stats["breaker_open"] is False
+    assert stats["breaker_state"] == "CLOSED"
+    assert stats["calls_last_hour"] == 4            # budget WAS consumed
+
+
+def test_v3b_degraded_none_counts_and_trips():
+    """A degraded result (the API call failed) is what the breaker is for: N of
+    them trip it, and the next call is refused at admission."""
+    ledger = fresh_ledger(breaker_consecutive_errors=3)
+    judge = flagged_judge(degraded=True)
+
+    for i in range(3):
+        r = evaluate(**in_band_case(), ledger=ledger, judge=judge, now=1000.0 + i)
+        assert r.skip_reason == JUDGE_FAILED, f"call {i}"
+
+    assert ledger.stats(now=1003.0)["breaker_open"] is True
+    r = evaluate(**in_band_case(), ledger=ledger, judge=must_not_be_called, now=1003.0)
+    assert r.skip_reason == BREAKER_OPEN
+    assert ledger.stats(now=1003.0)["calls_last_hour"] == 3   # no new spend
+
+
+def test_v3b_anomalous_probe_resolves_half_open():
+    """The reason a no-op was rejected: an anomalous half-open probe must
+    RESOLVE the probe. If nothing were recorded, probe_in_flight would stay
+    True and the breaker would refuse every call forever."""
+    ledger = fresh_ledger(breaker_cooldown_seconds=900)
+    trip_breaker(ledger, now=1000.0)
+    assert ledger.stats(now=1900.0)["breaker_state"] == "HALF_OPEN"
+
+    r = evaluate(**in_band_case(), ledger=ledger,
+                 judge=flagged_judge(anomalous=True), now=1900.0)
+    assert r.skip_reason == JUDGE_FAILED
+
+    stats = ledger.stats(now=1900.0)
+    assert stats["probe_in_flight"] is False
+    assert stats["breaker_state"] == "CLOSED"
+    assert stats["consecutive_errors"] == 0
+    assert ledger.admit("next", now=1901.0) == JUDGED   # traffic resumed
+
+
+def test_v3b_anomalous_resets_consecutive_errors():
+    """An anomalous result proves the API is reachable, so it clears earlier
+    degraded errors the same way a verdict does."""
+    ledger = fresh_ledger(breaker_consecutive_errors=3)
+    for i in range(2):
+        evaluate(**in_band_case(), ledger=ledger,
+                 judge=flagged_judge(degraded=True), now=1000.0 + i)
+    assert ledger.stats(now=1001.0)["consecutive_errors"] == 2
+
+    evaluate(**in_band_case(), ledger=ledger,
+             judge=flagged_judge(anomalous=True), now=1002.0)
+    assert ledger.stats(now=1002.0)["consecutive_errors"] == 0
+
+    # And it really reset: one more degraded result does NOT trip the breaker.
+    evaluate(**in_band_case(), ledger=ledger,
+             judge=flagged_judge(degraded=True), now=1003.0)
+    assert ledger.stats(now=1003.0)["breaker_open"] is False
+
+
+def test_v3b_both_flags_counts():
+    """degraded wins: if both flags are set, the call is treated as failed."""
+    ledger = fresh_ledger()
+    evaluate(**in_band_case(), ledger=ledger,
+             judge=flagged_judge(anomalous=True, degraded=True), now=1000.0)
+    assert ledger.stats(now=1000.0)["consecutive_errors"] == 1
+
+
+@pytest.mark.parametrize("value", ["true", 1], ids=["str_true", "int_1"])
+def test_v3b_non_bool_anomalous_counts(value):
+    """Only the exact bool True counts as anomalous. A judge that breaks the flag
+    contract is treated as broken, never as healthy."""
+    ledger = fresh_ledger()
+    evaluate(**in_band_case(), ledger=ledger,
+             judge=flagged_judge(anomalous=value), now=1000.0)
+    assert ledger.stats(now=1000.0)["consecutive_errors"] == 1
+
+
+def test_v3b_non_dict_return_counts():
+    """A return with no .get (a string, None, a list) is a broken judge: it
+    counts as an error and still gets the truthful judge_failed label."""
+    for i, bad in enumerate(["VERDICT: CLEAN", None, ["anomalous", True]]):
+        ledger = fresh_ledger()
+        r = evaluate(**in_band_case(), ledger=ledger,
+                     judge=lambda _p, bad=bad: bad, now=1000.0)
+        assert r.skip_reason == JUDGE_FAILED, f"case {i}"
+        assert ledger.stats(now=1000.0)["consecutive_errors"] == 1, f"case {i}"
+
+
+def test_v3b_anomalous_row_label_and_merge_unchanged():
+    """V3b changes breaker bookkeeping only. The row an anomalous call produces
+    is identical to V3a's: judge_failed, no verdict, local risk untouched."""
+    ledger = fresh_ledger()
+    r = evaluate(**in_band_case(), ledger=ledger,
+                 judge=flagged_judge(anomalous=True), now=1000.0)
+
+    assert r.skip_reason == JUDGE_FAILED
+    assert r.verdict is None
+    assert r.confidence is None
+    assert r.reason is None
+    assert r.risk_level == "MEDIUM"
+    assert r.disagreement is None
+    assert ledger.stats(now=1000.0)["calls_last_hour"] == 1
+
+
+def test_v3b_skip_reasons_vocabulary_pinned():
+    """V3b adds no outcome. These strings are wire format (persisted rows and
+    db.py's CHECK constraint): any change here is a schema migration event."""
+    assert SKIP_REASONS == {
+        "watch_band_se_sentiment",
+        "band_miss",
+        "budget_global",
+        "budget_source",
+        "breaker_open",
+        "judge_failed",
+        "disabled",
+    }
+
+
+def _fake_client(text):
+    """Stands in for the Anthropic client: messages.create returns `text`."""
+    response = SimpleNamespace(content=[SimpleNamespace(text=text)])
+    return SimpleNamespace(messages=SimpleNamespace(create=lambda **_kw: response))
+
+
+def test_v3b_real_ai_firewall_shapes_route_correctly(monkeypatch):
+    """Runs the REAL pinned api_scan (only the network client is stubbed), so a
+    pin bump that renames or merges the flags fails here instead of silently
+    rerouting the breaker. Skipped where ai-firewall is not installed; CI
+    installs it, and H-A10 requires this to PASS there, not skip."""
+    detector = pytest.importorskip("ai_firewall.detector")
+
+    # Anomalous: the API answered with an out-of-vocabulary verdict.
+    monkeypatch.setattr(detector, "get_client", lambda: _fake_client("VERDICT: MAYBE"))
+    shape = detector.api_scan("p")
+    assert shape["VERDICT"] is None and shape.get("anomalous") is True
+    assert "degraded" not in shape
+    ledger = fresh_ledger()
+    r = evaluate(**in_band_case(), ledger=ledger, judge=detector.api_scan, now=1000.0)
+    assert r.skip_reason == JUDGE_FAILED
+    assert ledger.stats(now=1000.0)["consecutive_errors"] == 0
+
+    # Degraded: the client call raised.
+    def broken_client():
+        raise RuntimeError("transport down")
+    monkeypatch.setattr(detector, "get_client", broken_client)
+    shape = detector.api_scan("p")
+    assert shape["VERDICT"] is None and shape.get("degraded") is True
+    assert "anomalous" not in shape
+    ledger = fresh_ledger()
+    r = evaluate(**in_band_case(), ledger=ledger, judge=detector.api_scan, now=1000.0)
+    assert r.skip_reason == JUDGE_FAILED
+    assert ledger.stats(now=1000.0)["consecutive_errors"] == 1
+
+    # Valid verdict: a normal success, merged as before.
+    monkeypatch.setattr(detector, "get_client", lambda: _fake_client(
+        "VERDICT: JAILBREAK\nCONFIDENCE: HIGH\nREASON: stub"))
+    ledger = fresh_ledger()
+    r = evaluate(**in_band_case(), ledger=ledger, judge=detector.api_scan, now=1000.0)
+    assert r.verdict == "JAILBREAK"
+    assert r.risk_level == "HIGH"
+    assert ledger.stats(now=1000.0)["consecutive_errors"] == 0
 
 
 # ============================================================================

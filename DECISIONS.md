@@ -308,6 +308,10 @@ outcome, not two:
 returned no usable verdict (degraded/anomalous — `VERDICT is None`). The
 breaker's consecutive-error count is incremented, so a persistently broken
 judge stops being called; but **the call happened and consumed budget**.
+*(Amended 2026-11-05 by V3b: the count is incremented for a degraded or
+otherwise failed call, but NOT for an anomalous one, which is booked as a
+success. The row label is unchanged: every None verdict is still
+`judge_failed`.)*
 
 A first implementation labelled this case `breaker_open`. That is a FALSE
 CLAIM, and it corrupts the audit trail this file exists to protect: by the time
@@ -327,6 +331,51 @@ Invariant, stated plainly: **a row's skip reason must be true about what
 actually happened to that row.** `breaker_open` means the call was never made.
 `judge_failed` means it was made and came back unusable. Distinguishable, and
 budget-consuming vs not.
+
+**V3b: an anomalous result is a HEALTHY call for the breaker (2026-11-05).**
+ai-firewall returns a None verdict for two different reasons, and V3a booked
+both as breaker errors:
+
+- `degraded: True`: the API call itself failed (exception, outage, timeout).
+  This is what the breaker exists to detect.
+- `anomalous: True`: the API answered, but the output failed validation
+  (empty, oversized, unparseable, or an out-of-vocabulary verdict). The API is
+  healthy; the output was bad, possibly because the prompt steered it.
+
+The breaker measures API HEALTH, not verdict quality (the same reason
+CONFIDENCE does not gate it). Counting anomalous results as errors had two
+concrete faults:
+
+1. **Attacker-triggerable mute.** A few prompts that steer the classifier into
+   malformed output tripped the breaker and silenced the judge for every
+   source for the full cooldown.
+2. **The half-open probe needs an outcome.** The alternative considered,
+   recording nothing for an anomalous result, is worse: if the half-open probe
+   comes back anomalous, `_probe_in_flight` never clears, so the breaker reads
+   open and refuses every call forever. That is also attacker-triggerable.
+
+**Decision:** in `evaluate()`, a None verdict with `anomalous is True` and
+`degraded is not True` calls `record_success()`. Every other None (degraded, a
+raise, a non-dict return, a flag that is not exactly `True`, or both flags set)
+calls `record_error()` as before. The strict identity checks mean a judge that
+breaks the flag contract is treated as broken, never as healthy.
+
+**Unchanged:** the row label stays `judge_failed` for every None verdict (V3a's
+invariant: the call was made and came back unusable). `SKIP_REASONS` and the
+`semantic_skip_reason` CHECK constraint are untouched; no schema change.
+
+**Accepted tradeoff:** steered calls no longer trip the breaker, so an attacker
+who can reliably produce anomalous output can keep spending judge calls. That
+spend stays bounded by the global and per-source budget caps (V2), which are
+the controls for cost; the breaker is the control for outages.
+
+**Tests (test_semantic.py, `test_v3b_*`):** anomalous does not count; degraded
+counts and trips; an anomalous probe resolves half-open to closed; anomalous
+resets the error count; both flags, a non-bool flag, and a non-dict return all
+count; the row label and merge are unchanged; the skip-reason vocabulary is
+pinned; and the real ai-firewall result shapes (via `api_scan` with a stubbed
+client, skipped when ai-firewall is not installed) route as above. The existing
+Criterion D tests pass unchanged.
 
 **Criterion D — execution outcome (added 2026-07-12).** Criteria A and B cannot
 reach this path: by the time the judge is called, admission has already returned

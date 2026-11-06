@@ -56,13 +56,14 @@ BREAKER_OPEN = "breaker_open"
 
 ADMISSION_OUTCOMES = frozenset({JUDGED, BUDGET_GLOBAL, BUDGET_SOURCE, BREAKER_OPEN})
 
-# --- execution outcome: did the call succeed? (V3a) -------------------------
+# --- execution outcome: did the call succeed? (V3a, V3b) --------------------
 # JUDGE_FAILED means the call WAS made and DID consume budget, and the judge
 # returned no usable verdict (ai-firewall fails closed: VERDICT is None on a
-# degraded/anomalous scan). It is NOT breaker_open — the breaker was closed, or
+# degraded/anomalous scan). It is NOT breaker_open: the breaker was closed, or
 # admission would never have returned JUDGED. Reusing breaker_open here would
 # inflate the breaker-health signal and make ledger stats irreconcilable with
-# per-row skip reasons.
+# per-row skip reasons. The row label is the same for every None verdict; only
+# the breaker bookkeeping differs (V3b: anomalous = healthy API, not an error).
 
 JUDGE_FAILED = "judge_failed"
 
@@ -440,21 +441,39 @@ def evaluate(
     # NOT (its Anthropic client is constructed with no timeout and no
     # max_retries). Fix belongs there, then bump the SHA pin. The presence of
     # exception handling here does not mean this surface is covered.
+    # Set before the try so a raise, or a return without .get, leaves it False.
+    anomalous = False
     try:
         result = judge(prompt)
         verdict = result.get("VERDICT")
+        anomalous = (
+            result.get("anomalous") is True and result.get("degraded") is not True
+        )
     except Exception:
         verdict = None
 
     # ai-firewall fails CLOSED: a degraded or steered scan yields VERDICT None.
-    # A None verdict is NOT a verdict — it neither raises nor lowers anything.
-    # This is JUDGE_FAILED, never BREAKER_OPEN (V3a): the breaker was closed (or
-    # admission could not have returned JUDGED), the call WAS made, and budget
-    # WAS consumed. The error increments the breaker so a persistently broken
-    # judge stops being called — but this row's reason must state what actually
-    # happened to THIS row.
+    # A None verdict is NOT a verdict: it neither raises nor lowers anything.
+    # Every None is JUDGE_FAILED, never BREAKER_OPEN (V3a): the breaker was
+    # closed (or admission could not have returned JUDGED), the call WAS made,
+    # and budget WAS consumed. This row's reason states what happened to THIS row.
+    #
+    # The breaker measures API HEALTH (V3b), so the two None causes are booked
+    # differently:
+    # - anomalous (and not degraded): the API answered, but its output failed
+    #   validation (malformed, oversized, or steered by the prompt). The API is
+    #   healthy, so this is record_success. Counting it as an error would let an
+    #   attacker mute the judge for everyone with a few steering prompts, and a
+    #   no-op would leave a half-open probe unresolved forever (probe_in_flight
+    #   never clears). Spend on these calls stays bounded by the budget caps.
+    # - anything else (degraded, a raise, a non-dict return, a flag that is not
+    #   exactly True, or both flags set): the call itself failed or the judge
+    #   broke its contract, so it counts toward the trip, as before.
     if verdict is None:
-        ledger.record_error(now=now)
+        if anomalous:
+            ledger.record_success()
+        else:
+            ledger.record_error(now=now)
         return SemanticResult(risk_level=local_risk, skip_reason=JUDGE_FAILED)
 
     # CONFIDENCE deliberately does NOT gate this: the breaker measures API
