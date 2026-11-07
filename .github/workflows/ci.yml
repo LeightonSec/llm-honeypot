@@ -35,7 +35,7 @@ jobs:
       # library deps (anthropic, python-dotenv) are pinned in requirements.in —
       # mirror ai-firewall's pyproject and bump together on any SHA bump.
       - name: Install ai-firewall (pinned, --no-deps)
-        run: pip install --no-deps "ai-firewall @ git+https://github.com/LeightonSec/ai-firewall@91fc9aa3d836b1d563aa0f69cda27d53d7956775"
+        run: pip install --no-deps "ai-firewall @ git+https://github.com/LeightonSec/ai-firewall@54e72a212a2838beec0f0988bc9e86e7bad9a611"
 
       # Import smoke: proves the pinned SHA resolves, builds, and imports
       # against the lockfile-pinned deps on every matrix Python — CI must not

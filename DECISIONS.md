@@ -417,6 +417,12 @@ handling does not imply the surface is covered. Fix belongs in ai-firewall
 SHA pin); it is deliberately not a G2 gate criterion because testing a hang
 honestly requires sleeping or CI timeouts, both of which are worse than the gap.
 
+2026-11-07: closed by ai-firewall 0.3.0 (pin bumped to 54e72a2). The client now
+has an 8s read timeout, a 2s connect timeout and no retries. Residual: timeouts
+apply per operation, so a slowly trickling response can run past 8s in total,
+and this service runs on Flask's built-in server with no worker timeout behind
+it.
+
 **Check order is LOAD-BEARING:** band membership → budget → breaker. This
 ordering is what guarantees each case lands in exactly one reason, which is the
 only thing making a single enum column sufficient.

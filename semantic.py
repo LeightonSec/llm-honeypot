@@ -421,9 +421,10 @@ def evaluate(
     if judge is None:
         from ai_firewall.detector import api_scan as judge  # lazy: no import cost when disabled
 
-    # The judge call is wrapped even though ai-firewall's api_scan currently
-    # catches broadly and returns a degraded dict rather than raising (verified
-    # in its source). Relying on that would make THIS module's budget-consistency
+    # The judge call is wrapped even though ai-firewall's api_scan (0.3.0)
+    # returns a result dict for API trouble (degraded for transport and API
+    # errors, anomalous for a malformed 200) and raises only TypeError for a
+    # non-str prompt. Relying on that would make THIS module's budget-consistency
     # invariant depend on a callee's internal discipline, in another repo, behind
     # a SHA pin that a later gate may bump — and `judge` is an injection seam, so
     # any other judge has made no such promise. An uncaught raise here would be
@@ -434,13 +435,11 @@ def evaluate(
     # (call attempted, budget consumed, no usable verdict), so both take the same
     # truthful reason rather than inventing a distinction nobody would act on.
     #
-    # STILL OPEN (accepted gap, DECISIONS.md): a HANG is not an exception. This
-    # try/except cannot save us from a wedged connection — the call blocks with
-    # budget consumed and no row written. evaluate() ASSUMES the injected judge
-    # enforces its own transport timeout; ai-firewall's api_scan currently does
-    # NOT (its Anthropic client is constructed with no timeout and no
-    # max_retries). Fix belongs there, then bump the SHA pin. The presence of
-    # exception handling here does not mean this surface is covered.
+    # Hangs: evaluate() relies on the injected judge enforcing its own transport
+    # timeout. ai-firewall 0.3.0 sets an 8s read timeout, a 2s connect timeout
+    # and no retries, so a stalled call raises inside api_scan and comes back
+    # degraded. The timeouts apply per operation, so a slowly trickling response
+    # can still run past 8s in total.
     # Set before the try so a raise, or a return without .get, leaves it False.
     anomalous = False
     try:

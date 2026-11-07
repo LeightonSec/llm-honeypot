@@ -12,7 +12,7 @@ budget-capped. Design rationale lives in DECISIONS.md (P1–P6, G2-W); it wins o
 ## SOC Toolkit Position
 
 - **Layer:** Research (Layer 5)
-- **Depends on:** with the semantic layer OFF (default), nothing external at runtime (Flask, pydantic, vaderSentiment, python-dotenv). With `SEMANTIC_ENABLED=1`: ai-firewall (pinned git dep @91fc9aa, installed `--no-deps`) + anthropic (pinned in the hashed lockfile)
+- **Depends on:** with the semantic layer OFF (default), nothing external at runtime (Flask, pydantic, vaderSentiment, python-dotenv). With `SEMANTIC_ENABLED=1`: ai-firewall (pinned git dep @54e72a2, installed `--no-deps`) + anthropic (pinned in the hashed lockfile)
 - **Feeds into:** Incident Tracker (future), Unified Dashboard (future)
 - **Gap it fills:** Live attack capture and classification against a realistic AI target
 
@@ -85,7 +85,7 @@ budget-capped. Design rationale lives in DECISIONS.md (P1–P6, G2-W); it wins o
 ✅ Dashboard secret protection via header or URL param
 ✅ Rate limiting — 20 requests per IP per 60 seconds
 ✅ TRUST_PROXY support for reverse proxy deployments
-✅ Local pipeline + default-OFF semantic judge (ai-firewall pinned @91fc9aa; escalation-only, budget-capped, wired G2 2026-07-14)
+✅ Local pipeline + default-OFF semantic judge (ai-firewall pinned @54e72a2; escalation-only, budget-capped, wired G2 2026-07-14)
 ✅ Crescendo attack analysis in ANALYSIS.md
 
 ---
